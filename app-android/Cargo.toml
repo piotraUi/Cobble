@@ -1,0 +1,12 @@
+[package]
+name = "app-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+client-core.workspace = true
+renderer.workspace = true

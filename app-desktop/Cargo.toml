@@ -1,0 +1,19 @@
+[package]
+name = "app-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cobble"
+path = "src/main.rs"
+
+[dependencies]
+wgpu.workspace = true
+winit.workspace = true
+glam.workspace = true
+pollster.workspace = true
+log.workspace = true
+env_logger.workspace = true
+client-core.workspace = true
+renderer.workspace = true
