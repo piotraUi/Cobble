@@ -41,6 +41,18 @@ pub fn block_id_from_raw_state(raw_state: u16) -> BlockId {
     BlockId(raw_state >> 4)
 }
 
+/// Reads one 4-bit value out of a "nibble array" (2 values packed per
+/// byte, low nibble first) — the format both light arrays use on the
+/// wire. `index` uses the same Y-Z-X ordering as the block array.
+fn nibble_at(data: &[u8], index: usize) -> u8 {
+    let byte = data[index / 2];
+    if index.is_multiple_of(2) {
+        byte & 0x0F
+    } else {
+        byte >> 4
+    }
+}
+
 fn read_section(cursor: &mut Cursor, has_sky_light: bool) -> Result<Chunk> {
     let block_bytes = cursor.take(BLOCKS_BYTES)?;
     let mut chunk = Chunk::empty();
@@ -54,11 +66,26 @@ fn read_section(cursor: &mut Cursor, has_sky_light: bool) -> Result<Chunk> {
         }
     }
 
-    // Block light and (optionally) sky light follow but aren't needed
-    // for rendering yet — skip them for now (see roadmap step 7).
-    cursor.take(LIGHT_BYTES)?;
+    let block_light_bytes = cursor.take(LIGHT_BYTES)?;
+    for y in 0..16usize {
+        for z in 0..16usize {
+            for x in 0..16usize {
+                let index = (y * 16 + z) * 16 + x;
+                chunk.set_block_light(x, y, z, nibble_at(block_light_bytes, index));
+            }
+        }
+    }
+
     if has_sky_light {
-        cursor.take(LIGHT_BYTES)?;
+        let sky_light_bytes = cursor.take(LIGHT_BYTES)?;
+        for y in 0..16usize {
+            for z in 0..16usize {
+                for x in 0..16usize {
+                    let index = (y * 16 + z) * 16 + x;
+                    chunk.set_sky_light(x, y, z, nibble_at(sky_light_bytes, index));
+                }
+            }
+        }
     }
 
     Ok(chunk)
@@ -129,10 +156,41 @@ pub fn parse_bulk(
 mod tests {
     use super::*;
 
+    /// Packs 4096 nibble values (Y-Z-X order, 0-15 each) 2-per-byte,
+    /// low nibble first — the inverse of `nibble_at`.
+    fn encode_nibbles(value_at: impl Fn(usize, usize, usize) -> u8) -> Vec<u8> {
+        let mut bytes = vec![0u8; LIGHT_BYTES];
+        for y in 0..16usize {
+            for z in 0..16usize {
+                for x in 0..16usize {
+                    let index = (y * 16 + z) * 16 + x;
+                    let value = value_at(x, y, z) & 0x0F;
+                    if index % 2 == 0 {
+                        bytes[index / 2] |= value;
+                    } else {
+                        bytes[index / 2] |= value << 4;
+                    }
+                }
+            }
+        }
+        bytes
+    }
+
     /// Builds one synthetic section (block array + light arrays) the
     /// way a server would put it on the wire: block ids/metadata as
-    /// little-endian u16s in Y-Z-X order, then zeroed light arrays.
+    /// little-endian u16s in Y-Z-X order, then packed light nibbles
+    /// (both zeroed by default; use `encode_section_with_light` for a
+    /// section with real light values).
     fn encode_section(block_at: impl Fn(usize, usize, usize) -> (u16, u8), has_sky_light: bool) -> Vec<u8> {
+        encode_section_with_light(block_at, |_, _, _| 0, |_, _, _| 0, has_sky_light)
+    }
+
+    fn encode_section_with_light(
+        block_at: impl Fn(usize, usize, usize) -> (u16, u8),
+        block_light_at: impl Fn(usize, usize, usize) -> u8,
+        sky_light_at: impl Fn(usize, usize, usize) -> u8,
+        has_sky_light: bool,
+    ) -> Vec<u8> {
         let mut out = Vec::with_capacity(BLOCKS_BYTES + LIGHT_BYTES * 2);
         for y in 0..16usize {
             for z in 0..16usize {
@@ -143,9 +201,9 @@ mod tests {
                 }
             }
         }
-        out.extend(std::iter::repeat_n(0u8, LIGHT_BYTES));
+        out.extend(encode_nibbles(block_light_at));
         if has_sky_light {
-            out.extend(std::iter::repeat_n(0u8, LIGHT_BYTES));
+            out.extend(encode_nibbles(sky_light_at));
         }
         out
     }
@@ -210,5 +268,45 @@ mod tests {
         let mut section_bytes = encode_section(|_, _, _| (1, 0), true);
         section_bytes.truncate(section_bytes.len() - 1);
         assert!(parse_column_sections(0, 0, 0b1, true, false, &section_bytes).is_err());
+    }
+
+    #[test]
+    fn nibble_packing_round_trips_low_and_high_nibbles() {
+        // index 0 -> byte 0 low nibble, index 1 -> byte 0 high nibble.
+        let packed = encode_nibbles(|x, y, z| {
+            let index = (y * 16 + z) * 16 + x;
+            (index % 16) as u8
+        });
+        assert_eq!(nibble_at(&packed, 0), 0);
+        assert_eq!(nibble_at(&packed, 1), 1);
+        assert_eq!(nibble_at(&packed, 14), 14);
+        assert_eq!(nibble_at(&packed, 15), 15);
+    }
+
+    #[test]
+    fn parses_distinct_block_light_and_sky_light_per_block() {
+        let section_bytes = encode_section_with_light(
+            |_, _, _| (1, 0),
+            |x, y, z| ((x + y + z) % 16) as u8, // varies per block, exercises both nibble halves
+            |_, _, _| 15,                       // full daylight everywhere
+            true,
+        );
+
+        let (column, consumed) = parse_column_sections(0, 0, 0b1, true, false, &section_bytes).unwrap();
+        assert_eq!(consumed, section_bytes.len());
+
+        assert_eq!(column.get_light(0, 0, 0), (0, 15));
+        assert_eq!(column.get_light(5, 3, 2), (10, 15));
+        assert_eq!(column.get_light(15, 15, 15), ((15 + 15 + 15) % 16, 15));
+    }
+
+    #[test]
+    fn no_sky_light_dimension_leaves_sky_light_at_zero() {
+        let section_bytes = encode_section_with_light(|_, _, _| (1, 0), |_, _, _| 7, |_, _, _| 15, false);
+        let (column, _) = parse_column_sections(0, 0, 0b1, false, false, &section_bytes).unwrap();
+        // No sky light bytes were sent (has_sky_light=false), so it
+        // should stay at the chunk's zeroed default, not the 15 the
+        // encoder would have written had it been included.
+        assert_eq!(column.get_light(0, 0, 0), (7, 0));
     }
 }

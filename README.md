@@ -86,14 +86,18 @@ click to look around/capture the mouse, Escape to release the mouse
 (press again to return to the main menu).
 
 The trickiest parts have unit tests: `cargo test -p protocol` covers the
-1.8.9 chunk section byte layout, VarInt encoding, block Position
-packing, and packet compression; `cargo test -p client-core` covers the
-AABB collision (falling and landing, jumping, sliding to a stop against
-a wall); `cargo test -p texturepacks` covers `pack.mcmeta` parsing,
-coverage counting, and atlas packing against synthetic zips; `cargo test
--p renderer` covers the block-id-to-texture mapping and that meshing
-produces the right face count and stays within the right atlas tile's
-UV rect; `cargo test -p ui` covers font rasterization, text layout
+1.8.9 chunk section byte layout (including the light nibble arrays'
+packing), VarInt encoding, block Position packing, and packet
+compression; `cargo test -p client-core` covers the AABB collision
+(falling and landing, jumping, sliding to a stop against a wall) and
+the block/sky light storage and lookup defaults (loaded vs. missing
+section, in vs. out of world bounds); `cargo test -p texturepacks`
+covers `pack.mcmeta` parsing, coverage counting, and atlas packing
+against synthetic zips; `cargo test -p renderer` covers the
+block-id-to-texture mapping, that meshing produces the right face count
+and stays within the right atlas tile's UV rect, and that a fully-lit
+block meshes visibly brighter than a fully-dark one; `cargo test -p ui`
+covers font rasterization, text layout
 (including a real baseline-alignment bug and a long-label overflow bug
 this caught and fixed — verified by rendering the actual screens to PNG
 with a throwaway software rasterizer, since this sandbox has no GPU),
@@ -151,8 +155,28 @@ slots, but tapping one doesn't do anything — there's no inventory to
 select from yet either), and mine/place have no world-editing effect
 to trigger since that's not implemented on any platform yet.
 
-**Next up (step 7):** polish — real block/sky lighting, water/lava
-animation, sound, and other players' entities.
+**Step 7, part 1 (done):** real block/sky lighting. `protocol` now
+actually decodes the block light and sky light nibble arrays in Chunk
+Data (previously parsed off the wire and discarded — see the chunk
+format doc comment in `protocol::chunk_data`) into `client_core::Chunk`,
+which stores both per block (0-15 each, unpacked to a byte per block —
+the packing only matters on the wire). `renderer`'s mesher now looks up
+the real light at each face's neighbor position (`World::get_light`,
+falling back to open sky for anywhere with no loaded column) and mixes
+`max(block_light, sky_light) / 15` into the existing per-face
+directional shade, with a small ambient floor so unlit faces read as
+dim rather than pure black. The demo chunk is lit as a plain outdoor
+scene (full sky light, no block light) since there's no light
+*propagation* engine yet — this decodes and applies light a server
+already computed and sent, it doesn't compute new light itself (e.g.
+after a player places/breaks a block that should change nearby light).
+There's also no day/night cycle, so sky light is always full brightness
+regardless of server time. Real servers' actual computed light (cave
+darkness, torches, etc.) now shows up correctly since that data was
+already being sent — only rendering it was missing.
+
+**Next up (step 7, remaining):** water/lava animation, sound, and
+other players' entities.
 
 ### A note on testing this in CI/sandboxed environments
 

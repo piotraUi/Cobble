@@ -1,9 +1,27 @@
+use client_core::chunk::MAX_LIGHT;
 use client_core::chunk_column::WORLD_HEIGHT;
 use client_core::{BlockId, Chunk, World, CHUNK_SIZE};
 use texturepacks::TextureAtlas;
 
 use crate::block_textures::{face_uv, FaceKind};
 use crate::vertex::Vertex;
+
+/// A face's brightness never drops below this even in total darkness —
+/// a real voxel/light propagation engine (see roadmap step 7's other
+/// items) would make pitch-black caves genuinely readable-as-empty,
+/// but until then a fully unlit face being pure black just looks like
+/// a rendering bug, so a small ambient floor keeps it legible.
+const MIN_BRIGHTNESS: f32 = 0.05;
+
+/// Combines block + sky light (each 0-15, sky already time-of-day
+/// adjusted server-side... except we don't track time of day yet, so
+/// this treats sky light as always full daytime brightness — see
+/// roadmap step 7) into the [MIN_BRIGHTNESS, 1.0] multiplier `push_face`
+/// applies on top of its existing per-face directional shade.
+fn light_brightness(block_light: u8, sky_light: u8) -> f32 {
+    let level = block_light.max(sky_light).min(MAX_LIGHT) as f32 / MAX_LIGHT as f32;
+    level.max(MIN_BRIGHTNESS)
+}
 
 /// The 6 axis-aligned cube faces, each described by its outward normal,
 /// a simple directional shading factor (stand-in for real block/sky
@@ -108,8 +126,10 @@ const NEIGHBOR_OFFSETS: [(isize, isize, isize); 6] = [
 ];
 
 /// Emits one face's two triangles into `vertices`/`indices`, sampling
-/// `atlas` for the UV rect and applying `shade` as a flat per-vertex
-/// light stand-in (see `Face::shade`).
+/// `atlas` for the UV rect and applying `face.shade` (a directional
+/// stand-in for ambient occlusion) times `brightness` (the real
+/// block/sky light at the face — see `light_brightness`) as the
+/// per-vertex color multiplier.
 #[allow(clippy::too_many_arguments)]
 fn push_face(
     vertices: &mut Vec<Vertex>,
@@ -118,9 +138,11 @@ fn push_face(
     block: BlockId,
     face: &Face,
     origin: [f32; 3],
+    brightness: f32,
 ) {
     let (u0, v0, u1, v1) = face_uv(atlas, block, face.kind);
-    let shade = [face.shade, face.shade, face.shade];
+    let combined = face.shade * brightness;
+    let shade = [combined, combined, combined];
 
     let base_index = vertices.len() as u32;
     for (corner, uv_corner) in face.corners.iter().zip(UV_CORNERS.iter()) {
@@ -169,10 +191,18 @@ pub fn mesh_chunk(chunk: &Chunk, atlas: &TextureAtlas) -> (Vec<Vertex>, Vec<u32>
                         z as isize + offset.2,
                     );
 
-                    let neighbor_opaque = if nx < 0 || ny < 0 || nz < 0 {
-                        false
+                    let in_bounds = nx >= 0 && ny >= 0 && nz >= 0 && (nx as usize) < CHUNK_SIZE && (ny as usize) < CHUNK_SIZE && (nz as usize) < CHUNK_SIZE;
+                    let (neighbor_opaque, block_light, sky_light) = if in_bounds {
+                        let (nx, ny, nz) = (nx as usize, ny as usize, nz as usize);
+                        (
+                            chunk.get(nx, ny, nz).is_opaque(),
+                            chunk.block_light(nx, ny, nz),
+                            chunk.sky_light(nx, ny, nz),
+                        )
                     } else {
-                        chunk.get(nx as usize, ny as usize, nz as usize).is_opaque()
+                        // Outside this section — treat like the edge of
+                        // the loaded world (see World::get_light).
+                        (false, 0, MAX_LIGHT)
                     };
 
                     if neighbor_opaque {
@@ -186,6 +216,7 @@ pub fn mesh_chunk(chunk: &Chunk, atlas: &TextureAtlas) -> (Vec<Vertex>, Vec<u32>
                         block,
                         face,
                         [x as f32, y as f32, z as f32],
+                        light_brightness(block_light, sky_light),
                     );
                 }
             }
@@ -221,13 +252,12 @@ pub fn mesh_world(world: &World, atlas: &TextureAtlas) -> (Vec<Vertex>, Vec<u32>
                     let world_z = base_z + z as i32;
 
                     for (face, offset) in FACES.iter().zip(NEIGHBOR_OFFSETS.iter()) {
-                        let neighbor_opaque = world
-                            .get_block(world_x + offset.0 as i32, y as i32 + offset.1 as i32, world_z + offset.2 as i32)
-                            .is_opaque();
-                        if neighbor_opaque {
+                        let (nx, ny, nz) = (world_x + offset.0 as i32, y as i32 + offset.1 as i32, world_z + offset.2 as i32);
+                        if world.get_block(nx, ny, nz).is_opaque() {
                             continue;
                         }
 
+                        let (block_light, sky_light) = world.get_light(nx, ny, nz);
                         push_face(
                             &mut vertices,
                             &mut indices,
@@ -235,6 +265,7 @@ pub fn mesh_world(world: &World, atlas: &TextureAtlas) -> (Vec<Vertex>, Vec<u32>
                             block,
                             face,
                             [world_x as f32, y as f32, world_z as f32],
+                            light_brightness(block_light, sky_light),
                         );
                     }
                 }
@@ -292,5 +323,53 @@ mod tests {
         let expected_faces = 6 * 5; // 6 neighbors * 5 exposed faces each; center contributes 0
         assert_eq!(vertices.len(), expected_faces * 4);
         assert_eq!(indices.len(), expected_faces * 6);
+    }
+
+    #[test]
+    fn light_brightness_uses_the_brighter_of_block_and_sky_light() {
+        assert!((light_brightness(0, 0) - MIN_BRIGHTNESS).abs() < 1e-6);
+        assert!((light_brightness(MAX_LIGHT, 0) - 1.0).abs() < 1e-6);
+        assert!((light_brightness(0, MAX_LIGHT) - 1.0).abs() < 1e-6);
+        assert!((light_brightness(MAX_LIGHT, MAX_LIGHT) - 1.0).abs() < 1e-6);
+
+        let half = light_brightness(MAX_LIGHT / 2, 0);
+        assert!(half > MIN_BRIGHTNESS && half < 1.0);
+    }
+
+    #[test]
+    fn brightness_never_drops_below_the_ambient_floor() {
+        assert_eq!(light_brightness(0, 0), MIN_BRIGHTNESS);
+    }
+
+    #[test]
+    fn a_fully_lit_block_meshes_brighter_than_a_fully_dark_one() {
+        let atlas = texturepacks::build_fallback_atlas();
+
+        let mut lit = Chunk::empty();
+        for x in 0..CHUNK_SIZE {
+            for y in 0..CHUNK_SIZE {
+                for z in 0..CHUNK_SIZE {
+                    lit.set_sky_light(x, y, z, MAX_LIGHT);
+                }
+            }
+        }
+        lit.set(5, 5, 5, BlockId::STONE);
+        let (lit_vertices, _) = mesh_chunk(&lit, &atlas);
+
+        let mut dark = Chunk::empty(); // block/sky light both default to 0
+        dark.set(5, 5, 5, BlockId::STONE);
+        let (dark_vertices, _) = mesh_chunk(&dark, &atlas);
+
+        assert_eq!(lit_vertices.len(), dark_vertices.len());
+        for (lit_v, dark_v) in lit_vertices.iter().zip(dark_vertices.iter()) {
+            for channel in 0..3 {
+                assert!(
+                    lit_v.color[channel] > dark_v.color[channel],
+                    "expected lit vertex brighter than dark one: {:?} vs {:?}",
+                    lit_v.color,
+                    dark_v.color
+                );
+            }
+        }
     }
 }

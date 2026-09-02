@@ -1,5 +1,5 @@
 use crate::block::BlockId;
-use crate::chunk::{Chunk, CHUNK_SIZE};
+use crate::chunk::{Chunk, CHUNK_SIZE, MAX_LIGHT};
 
 /// Number of 16x16x16 sections stacked in a 1.8.9 chunk column
 /// (0..256 world height).
@@ -56,5 +56,66 @@ impl ChunkColumn {
         let section_y = y / CHUNK_SIZE;
         self.section_mut(section_y)
             .set(x, y % CHUNK_SIZE, z, block);
+    }
+
+    /// Returns `(block_light, sky_light)` at this position. A missing
+    /// section (no block data ever received for it, as opposed to one
+    /// that's present but all-air) has no light data either — treated
+    /// as open sky, since that's the common case for the sections
+    /// above a column's actual terrain.
+    pub fn get_light(&self, x: usize, y: usize, z: usize) -> (u8, u8) {
+        if y >= WORLD_HEIGHT {
+            return (0, MAX_LIGHT);
+        }
+        let section_y = y / CHUNK_SIZE;
+        match self.section(section_y) {
+            Some(section) => {
+                let ly = y % CHUNK_SIZE;
+                (section.block_light(x, ly, z), section.sky_light(x, ly, z))
+            }
+            None => (0, MAX_LIGHT),
+        }
+    }
+
+    pub fn set_block_light(&mut self, x: usize, y: usize, z: usize, level: u8) {
+        if y >= WORLD_HEIGHT {
+            return;
+        }
+        let section_y = y / CHUNK_SIZE;
+        self.section_mut(section_y).set_block_light(x, y % CHUNK_SIZE, z, level);
+    }
+
+    pub fn set_sky_light(&mut self, x: usize, y: usize, z: usize, level: u8) {
+        if y >= WORLD_HEIGHT {
+            return;
+        }
+        let section_y = y / CHUNK_SIZE;
+        self.section_mut(section_y).set_sky_light(x, y % CHUNK_SIZE, z, level);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_section_defaults_to_open_sky_light() {
+        let column = ChunkColumn::empty(0, 0);
+        // Section 5 (y = 80..96) was never populated.
+        assert_eq!(column.get_light(0, 80, 0), (0, MAX_LIGHT));
+    }
+
+    #[test]
+    fn present_section_returns_its_actual_light_values() {
+        let mut column = ChunkColumn::empty(0, 0);
+        column.set_block_light(1, 20, 1, 12);
+        column.set_sky_light(1, 20, 1, 3);
+        assert_eq!(column.get_light(1, 20, 1), (12, 3));
+    }
+
+    #[test]
+    fn beyond_world_height_defaults_to_open_sky_light() {
+        let column = ChunkColumn::empty(0, 0);
+        assert_eq!(column.get_light(0, WORLD_HEIGHT, 0), (0, MAX_LIGHT));
     }
 }
