@@ -131,7 +131,12 @@ enum Mode {
 }
 
 fn main() {
-    env_logger::init();
+    // env_logger prints nothing at all unless RUST_LOG is set, which
+    // makes the console window look "empty" even when something (e.g.
+    // a server disconnect reason) was worth seeing — default to info
+    // so it's actually useful out of the box; RUST_LOG can still raise/
+    // lower this.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let mut args = std::env::args().skip(1);
     let server_arg = args.next();
