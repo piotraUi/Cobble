@@ -33,6 +33,9 @@ log = "0.4"
 env_logger = "0.11"
 flate2 = "1"
 uuid = { version = "1", features = ["v4"] }
+image = { version = "0.24", default-features = false, features = ["png"] }
+sha1 = "0.10"
+dirs = "5"
 
 protocol = { path = "protocol" }
 renderer = { path = "renderer" }

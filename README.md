@@ -11,7 +11,7 @@ engine or a server.
 - `renderer` — voxel renderer on `wgpu` (chunk meshing, texture atlas, camera)
 - `client-core` — game state: blocks, chunks, camera, player, physics
 - `ui` — Minecraft-styled UI (menus, HUD) rendered directly with `wgpu`
-- `texturepacks` — Modrinth integration: search, download, validate, fallback
+- `texturepacks` — Modrinth integration: search, download, validate, atlas
 - `app-desktop` — desktop entry point (`winit` + `wgpu`)
 - `app-android` — Android entry point (`android-activity` + `wgpu`)
 
@@ -59,13 +59,36 @@ The trickiest parts have unit tests: `cargo test -p protocol` covers the
 1.8.9 chunk section byte layout, VarInt encoding, block Position
 packing, and packet compression; `cargo test -p client-core` covers the
 AABB collision (falling and landing, jumping, sliding to a stop against
-a wall). Still worth running against a real server and playtesting by
-hand — none of this was exercised against live server traffic or a real
-GPU in development (see the note below).
+a wall); `cargo test -p texturepacks` covers `pack.mcmeta` parsing,
+coverage counting, and atlas packing against synthetic zips. There's
+also a network-gated integration test that exercises the real Modrinth
+API end to end (search → download → cache → validate → atlas) — it's
+`#[ignore]`d by default since it needs network access:
 
-**Next up (step 4):** the `texturepacks` crate — Modrinth search,
-download, coverage validation, and a real texture atlas instead of flat
-debug colors per block.
+```
+cargo test -p texturepacks --test live_modrinth -- --ignored --nocapture
+```
+
+Still worth running the desktop client against a real server and
+playtesting by hand — none of the networking/physics code was
+exercised against live server traffic or a real GPU in development (see
+the note below).
+
+**Step 4 (done):** the `texturepacks` crate talks to the real Modrinth
+API — searching resource packs for a game version, listing a project's
+versions, and downloading + caching a pack's `.zip` by SHA-1 (so
+re-selecting an already-downloaded pack never re-fetches it). It
+validates `pack.mcmeta`'s `pack_format` (1 for 1.8.x, flagged but not
+hard-rejected otherwise), checks how many of a hardcoded list of known
+1.8.9 block/item textures the pack actually provides, and packs
+whatever's present — plus an original, non-Mojang neutral gray
+checkerboard fallback for anything missing — into one square texture
+atlas with a UV rect per name. Not wired into rendering yet (still flat
+debug colors); that, plus the pack-picker UI, is step 5.
+
+**Next up (step 5):** the `ui` crate — a Minecraft-styled main menu and
+texture pack picker rendered directly with `wgpu`, plus wiring the new
+atlas into the world renderer and HUD instead of flat debug colors.
 
 ### A note on testing this in CI/sandboxed environments
 

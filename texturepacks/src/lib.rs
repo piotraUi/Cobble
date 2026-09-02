@@ -1,10 +1,31 @@
-//! Modrinth resource pack integration: search, download, SHA-1 cache,
-//! `pack.mcmeta`/`pack_format` validation, and coverage checking against
-//! the known 1.8.9 block/item texture list, with original (non-Mojang)
-//! fallback textures for anything missing.
+//! Modrinth resource pack integration: search, download with a SHA-1
+//! content cache, `pack.mcmeta`/`pack_format` validation, coverage
+//! checking against a known 1.8.9 texture list, and packing whatever's
+//! present (plus original, non-Mojang fallback tiles for anything
+//! missing) into one texture atlas.
 //!
-//! Not implemented yet — this is roadmap step 4.
+//! Texture packs are always fetched on demand at the user's explicit
+//! request (see the `ui` crate's picker, roadmap step 5) — nothing
+//! here bundles or redistributes Mojang assets; see `fallback` for the
+//! placeholder tiles used when a pack doesn't cover something.
 
-/// Base URL for the Modrinth API v2, used once the search/download
-/// client lands.
-pub const MODRINTH_API_BASE: &str = "https://api.modrinth.com/v2";
+pub mod atlas;
+pub mod cache;
+pub mod coverage;
+pub mod error;
+pub mod fallback;
+pub mod known_textures;
+pub mod load;
+pub mod modrinth;
+pub mod pack;
+
+pub use atlas::{AtlasRect, TextureAtlas};
+pub use coverage::CoverageReport;
+pub use error::{Result, TexturePackError};
+pub use load::{download_and_load, load_pack_from_zip, LoadedPack};
+pub use modrinth::MODRINTH_API_BASE;
+pub use pack::PackMeta;
+
+/// Minecraft version resource packs are matched against throughout
+/// this crate.
+pub const GAME_VERSION: &str = "1.8.9";
