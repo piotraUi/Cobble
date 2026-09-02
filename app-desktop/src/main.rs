@@ -1,26 +1,22 @@
 //! Desktop entry point (Windows/Linux).
 //!
-//! Roadmap step 1: hardcoded demo chunk, no networking. (still
-//! available: run with no arguments.)
-//!
-//! Roadmap step 2 (this file now): `cobble <host[:port]> [username]`
-//! connects to a real Minecraft 1.8.9 server over `protocol`, receives
-//! real Chunk Data, and renders the actual world instead of the demo
-//! chunk. Movement is still a free-fly camera with no physics/collision
-//! (that's step 3) — we send position updates to the server so it
-//! doesn't think we've disappeared, but nothing stops us from flying
-//! through walls yet.
+//! Roadmap step 1: hardcoded demo chunk, no networking.
+//! Roadmap step 2: `cobble <host[:port]> [username]` connects to a real
+//! Minecraft 1.8.9 server and renders the real world.
+//! Roadmap step 3 (this file now): the player is a real AABB with
+//! gravity and block collision (see `client_core::physics`) instead of
+//! a free-fly camera, in both the demo chunk and networked modes.
 
 mod network;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use client_core::{Camera, Chunk, InputState, World};
+use client_core::{Camera, Chunk, ChunkColumn, InputState, PlayerPhysics, World};
 use glam::Vec3;
 use network::OutgoingPosition;
 use protocol::GameEvent;
-use renderer::{mesh_chunk, mesh_world, GpuState};
+use renderer::{mesh_world, GpuState};
 use winit::{
     event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -28,20 +24,97 @@ use winit::{
     window::{CursorGrabMode, WindowBuilder},
 };
 
-const MOVE_SPEED: f32 = 8.0;
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 const POSITION_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Everything about the current session that differs between the
-/// no-network demo chunk and a real server connection.
-enum Session {
-    Demo,
-    Networked {
-        net: network::NetworkHandle,
-        world: World,
-        world_dirty: bool,
-        last_position_sent: Instant,
-    },
+/// Everything about the current game session: the world we're
+/// rendering/colliding against, the player's physics state, and
+/// (if connected) the network link to a real server.
+struct Session {
+    world: World,
+    physics: PlayerPhysics,
+    world_dirty: bool,
+    net: Option<network::NetworkHandle>,
+    /// True once we've received a real spawn position from the server
+    /// (or immediately, in demo mode) — until then we don't send
+    /// position updates, since we'd just be reporting the placeholder
+    /// spawn point.
+    ready: bool,
+    last_position_sent: Instant,
+}
+
+impl Session {
+    fn demo() -> Self {
+        let mut column = ChunkColumn::empty(0, 0);
+        column.set_section(0, Chunk::hardcoded_demo());
+        let mut world = World::new();
+        world.insert_column(column);
+
+        Self {
+            world,
+            physics: PlayerPhysics::new(Vec3::new(8.0, 20.0, 8.0)),
+            world_dirty: true,
+            net: None,
+            ready: true,
+            last_position_sent: Instant::now(),
+        }
+    }
+
+    fn networked(net: network::NetworkHandle) -> Self {
+        Self {
+            world: World::new(),
+            physics: PlayerPhysics::new(Vec3::new(0.0, 80.0, 0.0)),
+            world_dirty: false,
+            net: Some(net),
+            ready: false,
+            last_position_sent: Instant::now(),
+        }
+    }
+
+    /// Applies every network event queued since the last frame; a
+    /// no-op in demo mode.
+    fn drain_network_events(&mut self) {
+        let Some(net) = &mut self.net else { return };
+        let mut disconnected = false;
+        loop {
+            match net.events.try_recv() {
+                Ok(GameEvent::JoinGame { dimension, .. }) => {
+                    log::info!("joined game in dimension {dimension}");
+                }
+                Ok(GameEvent::ChunkColumnLoaded(column)) => {
+                    self.world.insert_column(column);
+                    self.world_dirty = true;
+                }
+                Ok(GameEvent::ChunkColumnUnloaded { chunk_x, chunk_z }) => {
+                    self.world.remove_column(chunk_x, chunk_z);
+                    self.world_dirty = true;
+                }
+                Ok(GameEvent::PlayerPositionAndLook { x, y, z, .. }) => {
+                    self.physics.position = Vec3::new(x as f32, y as f32, z as f32);
+                    self.physics.velocity = Vec3::ZERO;
+                    self.ready = true;
+                    log::info!("spawned at ({x:.1}, {y:.1}, {z:.1})");
+                }
+                Ok(GameEvent::BlockChange { x, y, z, block }) => {
+                    self.world.set_block(x, y, z, block);
+                    self.world_dirty = true;
+                }
+                Ok(GameEvent::ChatMessage(json)) => {
+                    log::info!("chat: {json}");
+                }
+                Ok(GameEvent::Disconnected(reason)) => {
+                    log::warn!("disconnected: {reason}");
+                    disconnected = true;
+                    break;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+                | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+            }
+        }
+        if disconnected {
+            self.net = None;
+        }
+    }
 }
 
 fn main() {
@@ -64,25 +137,17 @@ fn main() {
 
     let mut gpu = pollster::block_on(GpuState::new(window.clone()));
     let aspect = gpu.size.0 as f32 / gpu.size.1 as f32;
-    let mut camera = Camera::new(Vec3::new(-6.0, 14.0, -6.0), aspect);
+    let mut camera = Camera::new(Vec3::new(8.0, 20.0, 8.0), aspect);
 
     let mut session = match server_arg {
         Some(addr) => {
             let (host, port) = parse_address(&addr);
             log::info!("connecting to {host}:{port} as {username}...");
-            Session::Networked {
-                net: network::connect(host, port, username),
-                world: World::new(),
-                world_dirty: false,
-                last_position_sent: Instant::now(),
-            }
+            Session::networked(network::connect(host, port, username))
         }
         None => {
             log::info!("no server given, showing the hardcoded demo chunk (see: cobble <host[:port]> [username])");
-            let chunk = Chunk::hardcoded_demo();
-            let (vertices, indices) = mesh_chunk(&chunk);
-            gpu.set_chunk_mesh(&vertices, &indices);
-            Session::Demo
+            Session::demo()
         }
     };
 
@@ -129,19 +194,13 @@ fn main() {
                         let dt = (now - last_frame).as_secs_f32();
                         last_frame = now;
 
-                        if let Session::Networked {
-                            net,
-                            world,
-                            world_dirty,
-                            ..
-                        } = &mut session
-                        {
-                            drain_network_events(net, world, world_dirty, &mut camera);
-                            if *world_dirty {
-                                let (vertices, indices) = mesh_world(world);
+                        session.drain_network_events();
+                        if session.world_dirty {
+                            let (vertices, indices) = mesh_world(&session.world);
+                            if !indices.is_empty() {
                                 gpu.set_chunk_mesh(&vertices, &indices);
-                                *world_dirty = false;
                             }
+                            session.world_dirty = false;
                         }
 
                         let (dx, dy) = input.take_look_delta();
@@ -149,49 +208,45 @@ fn main() {
                             camera.rotate(dx * MOUSE_SENSITIVITY, -dy * MOUSE_SENSITIVITY);
                         }
 
-                        let mut move_dir = Vec3::ZERO;
-                        let forward = camera.forward();
-                        let flat_forward = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
-                        let right = camera.right();
-                        if input.move_forward {
-                            move_dir += flat_forward;
-                        }
-                        if input.move_backward {
-                            move_dir -= flat_forward;
-                        }
-                        if input.move_right {
-                            move_dir += right;
-                        }
-                        if input.move_left {
-                            move_dir -= right;
-                        }
-                        if input.jump {
-                            move_dir += Vec3::Y;
-                        }
-                        if input.sneak {
-                            move_dir -= Vec3::Y;
-                        }
-                        if move_dir.length_squared() > 0.0 {
-                            camera.position += move_dir.normalize() * MOVE_SPEED * dt;
-                        }
+                        if session.ready {
+                            let forward = camera.forward();
+                            let flat_forward = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+                            let right = camera.right();
+                            let mut wish_dir = Vec3::ZERO;
+                            if input.move_forward {
+                                wish_dir += flat_forward;
+                            }
+                            if input.move_backward {
+                                wish_dir -= flat_forward;
+                            }
+                            if input.move_right {
+                                wish_dir += right;
+                            }
+                            if input.move_left {
+                                wish_dir -= right;
+                            }
 
-                        if let Session::Networked {
-                            net,
-                            last_position_sent,
-                            ..
-                        } = &mut session
-                        {
-                            if now.duration_since(*last_position_sent) >= POSITION_UPDATE_INTERVAL {
-                                *last_position_sent = now;
+                            // dt can spike after e.g. an OS-level stall; clamp it so
+                            // physics never takes one giant, tunneling-prone step.
+                            let physics_dt = dt.min(1.0 / 20.0);
+                            session
+                                .physics
+                                .update(&session.world, wish_dir, input.jump, input.sneak, physics_dt);
+                        }
+                        camera.position = session.physics.eye_position();
+
+                        if let Some(net) = &session.net {
+                            if session.ready && now.duration_since(session.last_position_sent) >= POSITION_UPDATE_INTERVAL {
+                                session.last_position_sent = now;
                                 let yaw_deg = camera.yaw.to_degrees() + 90.0;
                                 let pitch_deg = -camera.pitch.to_degrees();
                                 net.send_position(OutgoingPosition {
-                                    x: camera.position.x as f64,
-                                    y: camera.position.y as f64,
-                                    z: camera.position.z as f64,
+                                    x: session.physics.position.x as f64,
+                                    y: session.physics.position.y as f64,
+                                    z: session.physics.position.z as f64,
                                     yaw: yaw_deg,
                                     pitch: pitch_deg,
-                                    on_ground: false,
+                                    on_ground: session.physics.on_ground,
                                 });
                             }
                         }
@@ -231,48 +286,5 @@ fn parse_address(addr: &str) -> (String, u16) {
             Err(_) => (addr.to_string(), 25565),
         },
         None => (addr.to_string(), 25565),
-    }
-}
-
-/// Applies every network event queued since the last frame to `world`
-/// and `camera`, without blocking if none are ready yet.
-fn drain_network_events(
-    net: &mut network::NetworkHandle,
-    world: &mut World,
-    world_dirty: &mut bool,
-    camera: &mut Camera,
-) {
-    loop {
-        match net.events.try_recv() {
-            Ok(GameEvent::JoinGame { dimension, .. }) => {
-                log::info!("joined game in dimension {dimension}");
-            }
-            Ok(GameEvent::ChunkColumnLoaded(column)) => {
-                world.insert_column(column);
-                *world_dirty = true;
-            }
-            Ok(GameEvent::ChunkColumnUnloaded { chunk_x, chunk_z }) => {
-                world.remove_column(chunk_x, chunk_z);
-                *world_dirty = true;
-            }
-            Ok(GameEvent::PlayerPositionAndLook { x, y, z, yaw, pitch }) => {
-                camera.position = Vec3::new(x as f32, y as f32, z as f32);
-                camera.yaw = (yaw - 90.0).to_radians();
-                camera.pitch = (-pitch).to_radians();
-                log::info!("spawned at ({x:.1}, {y:.1}, {z:.1})");
-            }
-            Ok(GameEvent::BlockChange { x, y, z, block }) => {
-                world.set_block(x, y, z, block);
-                *world_dirty = true;
-            }
-            Ok(GameEvent::ChatMessage(json)) => {
-                log::info!("chat: {json}");
-            }
-            Ok(GameEvent::Disconnected(reason)) => {
-                log::warn!("disconnected: {reason}");
-            }
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
-        }
     }
 }

@@ -28,8 +28,16 @@ a real 1.8.9 server, decodes Chunk Data and Chunk Data Bulk into real
 block data, and answers Keep Alive so the server doesn't time us out.
 `app-desktop` now renders the actual connected world instead of the demo
 chunk, spawns at the server's given position, and sends player position
-updates. Entities, inventory, and full physics/collision aren't
-implemented yet (see steps 3+); movement is still a free-fly camera.
+updates.
+
+**Step 3 (done):** the player is a real 0.6×1.8 AABB now
+(`client_core::physics`) — gravity, jumping, and per-axis sliding
+collision against the world's blocks, resolved one axis at a time so
+walking into a corner slides along the wall instead of stopping dead.
+This replaces the free-fly camera in both the demo chunk and networked
+modes; the demo chunk is now a real physics playground (spawns falling
+onto it) instead of just something to fly around. Entities and inventory
+still aren't implemented (later steps).
 
 Run without arguments for the old hardcoded demo chunk:
 
@@ -43,17 +51,30 @@ Or connect to a real (offline-mode) 1.8.9 server:
 cargo run --bin cobble -- <host[:port]> [username]
 ```
 
-Controls: WASD to move, click the window to capture the mouse and look
-around, Space/Shift to fly up/down, Escape to release the mouse.
+Controls: WASD to move, Space to jump, Shift to sneak (slower walk),
+click the window to capture the mouse and look around, Escape to
+release the mouse.
 
-The trickiest part — decoding the 1.8.9 chunk section byte layout, VarInt
-encoding, block Position packing, and packet compression — has unit
-tests in `protocol` (`cargo test -p protocol`); run against a real server
-to be sure, since none of this was exercised against live server traffic
-in development.
+The trickiest parts have unit tests: `cargo test -p protocol` covers the
+1.8.9 chunk section byte layout, VarInt encoding, block Position
+packing, and packet compression; `cargo test -p client-core` covers the
+AABB collision (falling and landing, jumping, sliding to a stop against
+a wall). Still worth running against a real server and playtesting by
+hand — none of this was exercised against live server traffic or a real
+GPU in development (see the note below).
 
-**Next up (step 3):** player movement physics — gravity and AABB
-collision against the now-real world, instead of flying through it.
+**Next up (step 4):** the `texturepacks` crate — Modrinth search,
+download, coverage validation, and a real texture atlas instead of flat
+debug colors per block.
+
+### A note on testing this in CI/sandboxed environments
+
+Development happened in a sandboxed container with no Vulkan/EGL GPU
+drivers, so `wgpu` surface creation panics there — this is an
+environment limitation, not a code issue (the workspace builds clean
+with zero `clippy` warnings, and non-rendering logic has direct unit
+test coverage as noted above). Run it on a real desktop with a GPU to
+see it render.
 
 ## Legal note
 

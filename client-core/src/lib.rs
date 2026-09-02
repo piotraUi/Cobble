@@ -9,6 +9,7 @@ pub mod camera;
 pub mod chunk;
 pub mod chunk_column;
 pub mod input;
+pub mod physics;
 pub mod world;
 
 pub use block::BlockId;
@@ -16,4 +17,5 @@ pub use camera::Camera;
 pub use chunk::{Chunk, CHUNK_SIZE};
 pub use chunk_column::{ChunkColumn, SECTIONS_PER_COLUMN, WORLD_HEIGHT};
 pub use input::InputState;
+pub use physics::PlayerPhysics;
 pub use world::World;
