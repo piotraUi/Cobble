@@ -144,11 +144,24 @@ cargo apk build --release --target aarch64-linux-android
 This produced a real, correctly-signed `.apk` (`net.cobble.client`,
 `INTERNET`/`ACCESS_NETWORK_STATE` permissions, `arm64-v8a` native
 library) in development — confirmed with `aapt dump badging` — but
-**was never installed on a real device or emulator**, since none was
-available in that environment. Treat the touch/IME handling in
-`app-android/src/lib.rs` as reviewed, not verified; the underlying game
-logic it drives (physics, rendering, protocol, texture packs) is the
-same code exercised by `app-desktop`'s tests.
+**was never installed on a real device or emulator during initial
+development**, since none was available in that environment; a user
+who did install it hit a black screen with no crash, confirmed to be
+exactly the bug described below. Treat the touch/IME handling in
+`app-android/src/lib.rs` as reviewed, not device-verified; the
+underlying game logic it drives (physics, rendering, protocol, texture
+packs) is the same code exercised by `app-desktop`'s tests.
+
+**Fixed:** the first build created the window and wgpu surface eagerly,
+before the event loop ever ran. On Android the native window is null
+until the app actually receives `Event::Resumed` from the OS (see
+winit's android backend) — creating a surface any earlier doesn't
+panic, it just never binds to a real window, so every frame "renders"
+successfully into nothing. `app-android` now defers window/`GpuState`
+creation to `Event::Resumed` and drops them again on `Event::Suspended`
+(rebuilding on the next `Resumed`, e.g. after the app is backgrounded
+and returns) instead of creating them once up front like `app-desktop`
+correctly can, since desktop windows are valid immediately.
 
 Hotbar slot selection isn't wired to touch taps yet (the HUD draws the
 slots, but tapping one doesn't do anything — there's no inventory to

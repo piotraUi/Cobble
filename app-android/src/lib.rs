@@ -146,40 +146,75 @@ fn desktop_smoke_entry() {
     run(event_loop);
 }
 
+/// The window + wgpu surface, which only exist while Android considers
+/// the app resumed and holding a live native window — see the module
+/// doc comment on why this can't be created eagerly like on desktop.
+struct Graphics {
+    window: Arc<winit::window::Window>,
+    gpu: GpuState,
+}
+
 fn run(event_loop: EventLoop<()>) {
+    // Poll (not Wait): the game needs continuous frames for physics/
+    // camera motion even with no new input events. Before the first
+    // Resumed (and again after any Suspended) this just spins doing
+    // nothing until graphics exists again, which is negligible.
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let window = Arc::new(
-        WindowBuilder::new()
-            .with_title("Cobble")
-            .build(&event_loop)
-            .expect("failed to create window"),
-    );
-
-    let mut gpu = pollster::block_on(GpuState::new(window.clone()));
-    let aspect = gpu.size.0 as f32 / gpu.size.1 as f32;
-    let mut camera = Camera::new(Vec3::new(8.0, 20.0, 8.0), aspect);
-
-    let mut current_atlas = texturepacks::build_fallback_atlas();
-    gpu.set_atlas_texture(&current_atlas);
-
+    // Everything that doesn't need a live window/surface can be built
+    // once up front; only `Graphics` gets (re)created around Android's
+    // Resumed/Suspended lifecycle.
     let ui_font = Font::load_regular(FONT_PIXEL_SIZE);
-    gpu.set_ui_texture(&ui_font.atlas);
-
+    let mut current_atlas = texturepacks::build_fallback_atlas();
+    let mut camera = Camera::new(Vec3::new(8.0, 20.0, 8.0), 1.0);
     let mut session: Option<Session> = None;
     let mut mode = Mode::Ui(Screen::MainMenu);
-
     let mut ui_input = UiInput::default();
-    let mut touch = TouchController::new((gpu.size.0 as f32, gpu.size.1 as f32));
+    let mut touch = TouchController::new((1.0, 1.0));
     let mut last_frame = Instant::now();
     let mut picker_events: Option<tokio::sync::mpsc::UnboundedReceiver<PickerEvent>> = None;
+    let mut graphics: Option<Graphics> = None;
 
     event_loop
         .run(move |event, elwt| match event {
-            Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
+            // The native window (and any surface bound to it) is null
+            // before the first Resumed and after every Suspended — see
+            // winit's android backend, which panics/errors if you try
+            // to get a raw window handle outside that window. Creating
+            // the wgpu surface any earlier "succeeds" with nothing
+            // actually bound to a real window: it never panics, it
+            // just never shows anything, which is exactly the
+            // black-screen-no-crash bug this replaced.
+            Event::Resumed => {
+                if graphics.is_none() {
+                    let window = Arc::new(
+                        WindowBuilder::new()
+                            .with_title("Cobble")
+                            .build(elwt)
+                            .expect("failed to create window"),
+                    );
+                    let mut gpu = pollster::block_on(GpuState::new(window.clone()));
+                    gpu.set_atlas_texture(&current_atlas);
+                    gpu.set_ui_texture(&ui_font.atlas);
+                    camera.aspect = gpu.size.0 as f32 / gpu.size.1.max(1) as f32;
+                    touch.relayout((gpu.size.0 as f32, gpu.size.1 as f32));
+                    graphics = Some(Graphics { window, gpu });
+                }
+            }
+            // The native window is about to become invalid (app
+            // backgrounded, screen off, ...); drop the surface now
+            // rather than let the next frame try to use a dead one.
+            // Everything else (session, camera, ui state) survives —
+            // Resumed rebuilds only the graphics half.
+            Event::Suspended => {
+                graphics = None;
+            }
+            Event::WindowEvent { window_id, event } if graphics.as_ref().is_some_and(|g| g.window.id() == window_id) => match event {
                 WindowEvent::CloseRequested => elwt.exit(),
                 WindowEvent::Resized(size) => {
-                    gpu.resize((size.width, size.height));
+                    let Some(g) = &mut graphics else { return };
+                    g.gpu.resize((size.width, size.height));
+                    camera.aspect = size.width as f32 / (size.height as f32).max(1.0);
                     touch.relayout((size.width as f32, size.height as f32));
                 }
                 WindowEvent::Touch(Touch { phase, location, id, .. }) => {
@@ -204,21 +239,22 @@ fn run(event_loop: EventLoop<()>) {
                     }
                 }
                 WindowEvent::RedrawRequested => {
+                    let Some(g) = &mut graphics else { return };
                     let now = Instant::now();
                     let dt = (now - last_frame).as_secs_f32();
                     last_frame = now;
-                    let viewport = (gpu.size.0 as f32, gpu.size.1 as f32);
+                    let viewport = (g.gpu.size.0 as f32, g.gpu.size.1 as f32);
 
                     match &mut mode {
                         Mode::Ui(screen) => {
-                            poll_picker_events(&mut picker_events, screen, &mut gpu, &mut current_atlas, &mut session);
+                            poll_picker_events(&mut picker_events, screen, &mut g.gpu, &mut current_atlas, &mut session);
 
                             let frame_input = ui_input.take();
                             let action = screen.update(&frame_input, viewport);
 
                             let mut painter = Painter::new(&ui_font);
                             screen.draw(&mut painter, viewport, frame_input.mouse_pos);
-                            gpu.set_ui_draw_list(&painter.list);
+                            g.gpu.set_ui_draw_list(&painter.list);
 
                             apply_menu_action(action, &mut mode, &mut session, &mut picker_events, &mut touch, viewport, elwt);
                         }
@@ -232,7 +268,7 @@ fn run(event_loop: EventLoop<()>) {
                             if active_session.world_dirty {
                                 let (vertices, indices) = mesh_world(&active_session.world, &current_atlas);
                                 if !indices.is_empty() {
-                                    gpu.set_chunk_mesh(&vertices, &indices);
+                                    g.gpu.set_chunk_mesh(&vertices, &indices);
                                 }
                                 active_session.world_dirty = false;
                             }
@@ -270,25 +306,32 @@ fn run(event_loop: EventLoop<()>) {
                                 }
                             }
 
-                            gpu.update_camera(camera.view_proj_matrix());
+                            g.gpu.update_camera(camera.view_proj_matrix());
 
                             let mut painter = Painter::new(&ui_font);
                             draw_hud(&mut painter, viewport);
                             touch.draw(&mut painter);
-                            gpu.set_ui_draw_list(&painter.list);
+                            g.gpu.set_ui_draw_list(&painter.list);
                         }
                     }
 
-                    match gpu.render() {
+                    match g.gpu.render() {
                         Ok(()) => {}
-                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => gpu.resize(gpu.size),
+                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                            let size = g.gpu.size;
+                            g.gpu.resize(size);
+                        }
                         Err(wgpu::SurfaceError::OutOfMemory) => elwt.exit(),
                         Err(e) => log::warn!("surface error: {e:?}"),
                     }
                 }
                 _ => {}
             },
-            Event::AboutToWait => window.request_redraw(),
+            Event::AboutToWait => {
+                if let Some(g) = &graphics {
+                    g.window.request_redraw();
+                }
+            }
             _ => {}
         })
         .expect("event loop error");
