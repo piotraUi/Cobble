@@ -21,6 +21,7 @@ pub mod pack;
 pub mod threaded;
 
 pub use atlas::{AtlasRect, TextureAtlas};
+pub use cache::default_cache_dir;
 pub use coverage::CoverageReport;
 pub use error::{Result, TexturePackError};
 pub use load::{

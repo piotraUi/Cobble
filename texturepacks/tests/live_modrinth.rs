@@ -24,7 +24,8 @@ async fn search_download_and_load_a_real_1_8_9_pack() {
     let version = versions.first().expect("project should have at least one 1.8.9 version");
     let file = version.zip_file().expect("version should have a zip file");
 
-    let (path, loaded) = texturepacks::download_and_load(&client, &hit.slug, file)
+    let cache_root = texturepacks::default_cache_dir().expect("resolve default cache dir");
+    let (path, loaded) = texturepacks::download_and_load(&client, &hit.slug, file, &cache_root)
         .await
         .expect("download and load pack");
 
@@ -42,7 +43,7 @@ async fn search_download_and_load_a_real_1_8_9_pack() {
     assert!(loaded.atlas.size() > 0);
 
     // Downloading again should hit the cache instead of the network.
-    let (cached_path, _) = texturepacks::download_and_load(&client, &hit.slug, file)
+    let (cached_path, _) = texturepacks::download_and_load(&client, &hit.slug, file, &cache_root)
         .await
         .expect("second download should reuse cache");
     assert_eq!(path, cached_path);

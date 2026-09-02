@@ -45,6 +45,13 @@ pub struct GpuState {
 
     ui_pipeline: wgpu::RenderPipeline,
     ui_screen_buffer: wgpu::Buffer,
+    /// Physical-pixels-per-logical-pixel of the window (`scale_factor()`
+    /// in winit terms). UI screens lay themselves out in logical
+    /// pixels; the screen uniform divides by this so those quads still
+    /// cover the full physical surface — otherwise fixed-pixel layout
+    /// constants render tiny on high-density phone screens. Defaults to
+    /// 1.0 (logical == physical) until the host reports a real value.
+    ui_scale: f32,
     ui_screen_bind_group: wgpu::BindGroup,
     ui_texture_bind_group: wgpu::BindGroup,
     ui_vertex_buffer: Option<wgpu::Buffer>,
@@ -261,6 +268,7 @@ impl GpuState {
                 }],
             });
 
+        // ui_scale is 1.0 at this point, so logical == physical here.
         let ui_screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ui-screen-buffer"),
             contents: bytemuck::cast_slice(&[ScreenUniform {
@@ -351,6 +359,7 @@ impl GpuState {
             chunk_index_count: 0,
             ui_pipeline,
             ui_screen_buffer,
+            ui_scale: 1.0,
             ui_screen_bind_group,
             ui_texture_bind_group,
             ui_vertex_buffer: None,
@@ -374,13 +383,34 @@ impl GpuState {
         self.config.height = new_size.1;
         self.surface.configure(&self.device, &self.config);
         self.depth_texture_view = create_depth_texture_view(&self.device, new_size.0, new_size.1);
+        self.write_ui_screen_uniform();
+    }
+
+    /// Sets the physical-pixels-per-logical-pixel ratio (the window's
+    /// `scale_factor()`) so UI quads authored in logical pixels still
+    /// cover the whole physical screen — see the `ui_scale` field doc
+    /// comment. Call this at startup and whenever the host receives a
+    /// `ScaleFactorChanged` event.
+    pub fn set_ui_scale(&mut self, scale: f32) {
+        self.ui_scale = scale.max(0.01);
+        self.write_ui_screen_uniform();
+    }
+
+    fn write_ui_screen_uniform(&self) {
         self.queue.write_buffer(
             &self.ui_screen_buffer,
             0,
             bytemuck::cast_slice(&[ScreenUniform {
-                size: [new_size.0 as f32, new_size.1 as f32, 0.0, 0.0],
+                size: [self.size.0 as f32 / self.ui_scale, self.size.1 as f32 / self.ui_scale, 0.0, 0.0],
             }]),
         );
+    }
+
+    /// Logical-pixel viewport size (physical size / `ui_scale`) — what
+    /// UI screens should lay themselves out against, and what mouse/
+    /// touch positions must be converted into before reaching them.
+    pub fn ui_viewport(&self) -> (f32, f32) {
+        (self.size.0 as f32 / self.ui_scale, self.size.1 as f32 / self.ui_scale)
     }
 
     pub fn set_chunk_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {

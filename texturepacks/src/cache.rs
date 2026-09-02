@@ -1,6 +1,12 @@
 //! Local download cache for texture pack `.zip` files, keyed by SHA-1
 //! so re-selecting an already-downloaded pack (or version) never
-//! re-fetches it. Cache root is `~/.cobble/texturepacks/`.
+//! re-fetches it. Where that cache should actually live is platform-
+//! specific — `dirs::home_dir()` works for desktop but returns `None`
+//! on Android (no `$HOME`/passwd-entry concept there; apps get a
+//! sandboxed data directory instead, which the host app resolves via
+//! `android_activity::AndroidApp::internal_data_path()` — see
+//! `app-android`) — so callers pass in the root explicitly rather than
+//! this module guessing.
 
 use std::path::{Path, PathBuf};
 
@@ -10,7 +16,9 @@ use tokio::io::AsyncWriteExt;
 use crate::error::{Result, TexturePackError};
 use crate::modrinth::VersionFile;
 
-pub fn cache_dir() -> Result<PathBuf> {
+/// The desktop-friendly default cache root (`~/.cobble/texturepacks/`).
+/// Not meaningful on Android — see the module doc comment.
+pub fn default_cache_dir() -> Result<PathBuf> {
     let home = dirs::home_dir().ok_or(TexturePackError::NoCacheDir)?;
     Ok(home.join(".cobble").join("texturepacks"))
 }
@@ -29,16 +37,20 @@ pub fn hex_sha1(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Downloads `file` into the cache if it isn't already there
+/// Downloads `file` into `cache_root` if it isn't already there
 /// (identified by its Modrinth-reported SHA-1), verifying the download
 /// against that hash, and returns the local path either way.
-pub async fn download_and_cache(client: &reqwest::Client, slug: &str, file: &VersionFile) -> Result<PathBuf> {
-    let dir = cache_dir()?;
-    tokio::fs::create_dir_all(&dir).await?;
+pub async fn download_and_cache(
+    client: &reqwest::Client,
+    slug: &str,
+    file: &VersionFile,
+    cache_root: &Path,
+) -> Result<PathBuf> {
+    tokio::fs::create_dir_all(cache_root).await?;
 
     let expected_sha1 = file.hashes.sha1.as_deref();
     let cache_key = expected_sha1.unwrap_or(&file.filename);
-    let path = cached_zip_path(&dir, slug, cache_key);
+    let path = cached_zip_path(cache_root, slug, cache_key);
 
     if path.exists() {
         log::info!("using cached texture pack: {}", path.display());

@@ -128,11 +128,20 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
     std::panic::set_hook(Box::new(|info| log::error!("panic: {info}")));
 
+    // Android has no `$HOME`/passwd concept, so `dirs::home_dir()` (what
+    // desktop uses) returns `None` here — the app-private data directory
+    // from `AndroidApp` is the platform-correct equivalent. `app` gets
+    // moved into `with_android_app` below, so read this off a clone first.
+    let cache_root = app
+        .internal_data_path()
+        .unwrap_or_else(|| std::env::temp_dir().join("cobble-texturepacks"))
+        .join("texturepacks");
+
     let event_loop = winit::event_loop::EventLoopBuilder::new()
         .with_android_app(app)
         .build()
         .expect("failed to create event loop");
-    run(event_loop);
+    run(event_loop, cache_root);
 }
 
 /// Non-Android builds (`cargo build -p app-android` on a desktop host)
@@ -143,7 +152,8 @@ fn android_main(app: winit::platform::android::activity::AndroidApp) {
 #[allow(dead_code)]
 fn desktop_smoke_entry() {
     let event_loop = EventLoop::new().expect("failed to create event loop");
-    run(event_loop);
+    let cache_root = std::env::temp_dir().join("cobble-texturepacks");
+    run(event_loop, cache_root);
 }
 
 /// The window + wgpu surface, which only exist while Android considers
@@ -154,7 +164,7 @@ struct Graphics {
     gpu: GpuState,
 }
 
-fn run(event_loop: EventLoop<()>) {
+fn run(event_loop: EventLoop<()>, cache_root: std::path::PathBuf) {
     // Poll (not Wait): the game needs continuous frames for physics/
     // camera motion even with no new input events. Before the first
     // Resumed (and again after any Suspended) this just spins doing
@@ -174,6 +184,12 @@ fn run(event_loop: EventLoop<()>) {
     let mut last_frame = Instant::now();
     let mut picker_events: Option<tokio::sync::mpsc::UnboundedReceiver<PickerEvent>> = None;
     let mut graphics: Option<Graphics> = None;
+    // Phones report a high `scale_factor()` (2.0-4.0+) so fixed-pixel UI
+    // layout constants (button sizes, joystick radius, ...) don't end
+    // up tiny in a corner of the physical screen — see `GpuState::ui_scale`.
+    // Touch/UI input arrives in physical pixels and must be divided by
+    // this before it's compared against the (now logical-pixel) layout.
+    let mut scale: f32 = 1.0;
 
     event_loop
         .run(move |event, elwt| match event {
@@ -193,11 +209,13 @@ fn run(event_loop: EventLoop<()>) {
                             .build(elwt)
                             .expect("failed to create window"),
                     );
+                    scale = window.scale_factor() as f32;
                     let mut gpu = pollster::block_on(GpuState::new(window.clone()));
                     gpu.set_atlas_texture(&current_atlas);
                     gpu.set_ui_texture(&ui_font.atlas);
+                    gpu.set_ui_scale(scale);
                     camera.aspect = gpu.size.0 as f32 / gpu.size.1.max(1) as f32;
-                    touch.relayout((gpu.size.0 as f32, gpu.size.1 as f32));
+                    touch.relayout(gpu.ui_viewport());
                     graphics = Some(Graphics { window, gpu });
                 }
             }
@@ -215,10 +233,16 @@ fn run(event_loop: EventLoop<()>) {
                     let Some(g) = &mut graphics else { return };
                     g.gpu.resize((size.width, size.height));
                     camera.aspect = size.width as f32 / (size.height as f32).max(1.0);
-                    touch.relayout((size.width as f32, size.height as f32));
+                    touch.relayout(g.gpu.ui_viewport());
+                }
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    let Some(g) = &mut graphics else { return };
+                    scale = scale_factor as f32;
+                    g.gpu.set_ui_scale(scale);
+                    touch.relayout(g.gpu.ui_viewport());
                 }
                 WindowEvent::Touch(Touch { phase, location, id, .. }) => {
-                    let pos = (location.x as f32, location.y as f32);
+                    let pos = (location.x as f32 / scale, location.y as f32 / scale);
                     match &mode {
                         Mode::Ui(_) => {
                             if phase == TouchPhase::Started {
@@ -243,7 +267,7 @@ fn run(event_loop: EventLoop<()>) {
                     let now = Instant::now();
                     let dt = (now - last_frame).as_secs_f32();
                     last_frame = now;
-                    let viewport = (g.gpu.size.0 as f32, g.gpu.size.1 as f32);
+                    let viewport = g.gpu.ui_viewport();
 
                     match &mut mode {
                         Mode::Ui(screen) => {
@@ -256,7 +280,7 @@ fn run(event_loop: EventLoop<()>) {
                             screen.draw(&mut painter, viewport, frame_input.mouse_pos);
                             g.gpu.set_ui_draw_list(&painter.list);
 
-                            apply_menu_action(action, &mut mode, &mut session, &mut picker_events, &mut touch, viewport, elwt);
+                            apply_menu_action(action, &mut mode, &mut session, &mut picker_events, &mut touch, viewport, elwt, &cache_root);
                         }
                         Mode::InGame => {
                             let Some(active_session) = &mut session else {
@@ -346,6 +370,7 @@ fn apply_menu_action(
     touch: &mut TouchController,
     viewport: (f32, f32),
     elwt: &winit::event_loop::EventLoopWindowTarget<()>,
+    cache_root: &std::path::Path,
 ) {
     match action {
         Action::None => {}
@@ -378,7 +403,7 @@ fn apply_menu_action(
                 if let PickerStatus::Loaded(hits) = &picker.status {
                     if let Some(hit) = hits.get(index).cloned() {
                         picker.status = PickerStatus::Downloading { title: hit.title.clone() };
-                        *picker_events = Some(texturepacks::threaded::download_and_load(hit));
+                        *picker_events = Some(texturepacks::threaded::download_and_load(hit, cache_root.to_path_buf()));
                     }
                 }
             }

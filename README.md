@@ -191,6 +191,37 @@ already being sent — only rendering it was missing.
 **Next up (step 7, remaining):** water/lava animation, sound, and
 other players' entities.
 
+**Fixed (real device reports after the black-screen fix):**
+
+- *Texture pack download failed with "could not determine a cache
+  directory for texture packs".* `texturepacks::cache::cache_dir()`
+  resolved the download cache via `dirs::home_dir()`, which returns
+  `None` on Android — there's no `$HOME`/passwd-entry concept there,
+  apps get a private sandboxed data directory instead, reached
+  differently. Renamed that function to `default_cache_dir()` (now
+  desktop-only) and made `download_and_cache`/`download_and_load`
+  (both the plain and `threaded` versions) take an explicit
+  `cache_root` instead of resolving one internally, so each platform
+  supplies its own: `app-desktop` still uses `default_cache_dir()`,
+  `app-android` uses `AndroidApp::internal_data_path()` (with a
+  `std::env::temp_dir()` fallback if that's ever `None`).
+- *UI too small on phones.* Menu buttons, text, and the touch
+  joystick/buttons are laid out with fixed pixel constants
+  (`BUTTON_WIDTH`, `JOYSTICK_RADIUS`, ...), authored assuming 1
+  physical pixel per logical pixel. Phones report a much higher
+  `window.scale_factor()` (2.0-4.0+), so those same pixel counts covered
+  a tiny corner of the real, much-higher-resolution surface. Rather
+  than rewrite every layout constant, `GpuState` now tracks a
+  `ui_scale` (the window's `scale_factor()`) and divides the physical
+  surface size by it before writing the UI's screen-space uniform —
+  so UI quads authored in logical pixels stretch to cover the whole
+  physical screen. Both apps set this at startup (and on
+  `WindowEvent::ScaleFactorChanged`) via `gpu.set_ui_scale(...)`, lay
+  screens out against `gpu.ui_viewport()` (logical size) instead of
+  physical `gpu.size`, and divide incoming mouse/touch positions by the
+  same scale before they reach `ui`/`TouchController`, which otherwise
+  compare screen-space input against logical-space layout.
+
 ### A note on testing this in CI/sandboxed environments
 
 Development happened in a sandboxed container with no Vulkan/EGL GPU

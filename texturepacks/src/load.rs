@@ -107,14 +107,16 @@ fn load_or_fallback<R: Read + std::io::Seek>(
     }
 }
 
-/// Downloads (or reuses the cached copy of) `file` and loads it as a
-/// ready-to-render pack.
+/// Downloads (or reuses the cached copy of) `file` under `cache_root`
+/// and loads it as a ready-to-render pack. See `cache`'s module doc
+/// comment for why the caller — not this crate — decides where that is.
 pub async fn download_and_load(
     client: &reqwest::Client,
     slug: &str,
     file: &VersionFile,
+    cache_root: &std::path::Path,
 ) -> Result<(std::path::PathBuf, LoadedPack)> {
-    let path = crate::cache::download_and_cache(client, slug, file).await?;
+    let path = crate::cache::download_and_cache(client, slug, file, cache_root).await?;
     let loaded = load_pack_from_zip(&path)?;
     Ok((path, loaded))
 }

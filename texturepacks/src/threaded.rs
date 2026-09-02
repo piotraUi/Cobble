@@ -5,6 +5,8 @@
 //! (desktop or Android) never blocks on it. Shared by `app-desktop`
 //! and `app-android`.
 
+use std::path::PathBuf;
+
 use tokio::sync::mpsc;
 
 use crate::load::LoadedPack;
@@ -44,7 +46,10 @@ pub fn search() -> mpsc::UnboundedReceiver<PickerEvent> {
     })
 }
 
-pub fn download_and_load(hit: SearchHit) -> mpsc::UnboundedReceiver<PickerEvent> {
+/// `cache_root` is platform-specific — see `cache`'s module doc
+/// comment — so the host app (`app-desktop`/`app-android`) resolves it
+/// and passes it in rather than this crate guessing.
+pub fn download_and_load(hit: SearchHit, cache_root: PathBuf) -> mpsc::UnboundedReceiver<PickerEvent> {
     spawn(async move {
         let result = async {
             let client = crate::modrinth::build_client().map_err(|e| e.to_string())?;
@@ -53,7 +58,7 @@ pub fn download_and_load(hit: SearchHit) -> mpsc::UnboundedReceiver<PickerEvent>
                 .map_err(|e| e.to_string())?;
             let version = versions.first().ok_or_else(|| "pack has no 1.8.9 versions".to_string())?;
             let file = version.zip_file().ok_or_else(|| "pack version has no .zip file".to_string())?;
-            let (_path, loaded) = crate::load::download_and_load(&client, &hit.slug, file)
+            let (_path, loaded) = crate::load::download_and_load(&client, &hit.slug, file, &cache_root)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok((hit.title.clone(), loaded))

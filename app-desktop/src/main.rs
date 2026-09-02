@@ -149,6 +149,8 @@ fn main() {
     );
 
     let mut gpu = pollster::block_on(GpuState::new(window.clone()));
+    let mut scale = window.scale_factor() as f32;
+    gpu.set_ui_scale(scale);
     let aspect = gpu.size.0 as f32 / gpu.size.1 as f32;
     let mut camera = Camera::new(Vec3::new(8.0, 20.0, 8.0), aspect);
 
@@ -187,8 +189,12 @@ fn main() {
                 match event {
                     WindowEvent::CloseRequested => elwt.exit(),
                     WindowEvent::Resized(size) => gpu.resize((size.width, size.height)),
+                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                        scale = scale_factor as f32;
+                        gpu.set_ui_scale(scale);
+                    }
                     WindowEvent::CursorMoved { position, .. } => {
-                        ui_input.mouse_pos = (position.x as f32, position.y as f32);
+                        ui_input.mouse_pos = (position.x as f32 / scale, position.y as f32 / scale);
                     }
                     WindowEvent::MouseInput {
                         state: ElementState::Pressed,
@@ -237,7 +243,7 @@ fn main() {
                         let now = Instant::now();
                         let dt = (now - last_frame).as_secs_f32();
                         last_frame = now;
-                        let viewport = (gpu.size.0 as f32, gpu.size.1 as f32);
+                        let viewport = gpu.ui_viewport();
 
                         match &mut mode {
                             Mode::Ui(screen) => {
@@ -425,7 +431,9 @@ fn apply_menu_action(
                 if let PickerStatus::Loaded(hits) = &picker.status {
                     if let Some(hit) = hits.get(index).cloned() {
                         picker.status = PickerStatus::Downloading { title: hit.title.clone() };
-                        *picker_events = Some(texturepacks::threaded::download_and_load(hit));
+                        let cache_root = texturepacks::default_cache_dir()
+                            .unwrap_or_else(|_| std::env::temp_dir().join("cobble-texturepacks"));
+                        *picker_events = Some(texturepacks::threaded::download_and_load(hit, cache_root));
                     }
                 }
             }
