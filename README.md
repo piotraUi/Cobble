@@ -30,6 +30,17 @@ block data, and answers Keep Alive so the server doesn't time us out.
 chunk, spawns at the server's given position, and sends player position
 updates.
 
+Offline-mode only means **online-mode (premium-only) servers won't let
+this client join** — they send an Encryption Request as the next login
+packet, which Cobble doesn't implement (no Mojang session
+auth/AES handshake yet), and will now disconnect with an explicit
+"server requires a premium (online-mode) account" reason instead of
+hanging forever waiting for a `LOGIN_SUCCESS` that's never coming (a
+real bug caught by trying to connect to `2b2t.org`, which is
+online-mode). Test against an offline-mode server (most local/private
+test servers default to this — `online-mode=false` in
+`server.properties`) until real Mojang authentication is implemented.
+
 **Step 3 (done):** the player is a real 0.6×1.8 AABB now
 (`client_core::physics`) — gravity, jumping, and per-axis sliding
 collision against the world's blocks, resolved one axis at a time so

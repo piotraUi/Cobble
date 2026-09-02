@@ -143,6 +143,17 @@ impl MinecraftConnection {
                     let reason = login::parse_login_disconnect(r)?;
                     return Err(ProtocolError::Disconnected(reason));
                 }
+                login::LOGIN_ENCRYPTION_REQUEST => {
+                    // Online-mode (premium-only) server — Cobble only
+                    // implements offline-mode login. Without this, we'd
+                    // fall into `other` below and hang forever waiting
+                    // for a LOGIN_SUCCESS that's never coming, since the
+                    // server is waiting on an encryption response we
+                    // don't send.
+                    return Err(ProtocolError::Disconnected(
+                        "server requires a premium (online-mode) account — Cobble only supports offline-mode login so far".to_string(),
+                    ));
+                }
                 other => {
                     log::debug!("ignoring unexpected login-state packet 0x{other:02x}");
                 }
