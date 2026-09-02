@@ -18,6 +18,7 @@ pub mod known_textures;
 pub mod load;
 pub mod modrinth;
 pub mod pack;
+pub mod threaded;
 
 pub use atlas::{AtlasRect, TextureAtlas};
 pub use coverage::CoverageReport;
@@ -28,6 +29,7 @@ pub use load::{
 };
 pub use modrinth::MODRINTH_API_BASE;
 pub use pack::PackMeta;
+pub use threaded::PickerEvent;
 
 /// Minecraft version resource packs are matched against throughout
 /// this crate.

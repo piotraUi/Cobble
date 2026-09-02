@@ -5,8 +5,38 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["lib", "cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
+wgpu.workspace = true
+glam.workspace = true
+pollster.workspace = true
+tokio.workspace = true
+log.workspace = true
 client-core.workspace = true
 renderer.workspace = true
+protocol.workspace = true
+texturepacks.workspace = true
+ui.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.29", default-features = false, features = ["android-native-activity"] }
+android_logger = "0.13"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+winit.workspace = true
+
+[package.metadata.android]
+package = "net.cobble.client"
+apk_label = "Cobble"
+strip = "strip"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 33
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.ACCESS_NETWORK_STATE"

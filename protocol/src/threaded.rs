@@ -1,9 +1,12 @@
-//! Runs the `protocol` connection on its own OS thread with a
-//! single-threaded Tokio runtime, and bridges it to the winit main
-//! loop over plain channels so `main.rs` never has to `await` anything.
+//! Runs a `MinecraftConnection` on its own OS thread with a
+//! single-threaded Tokio runtime, bridged to the caller over plain
+//! channels so a synchronous game loop (desktop or Android) never has
+//! to `await` anything. Shared by `app-desktop` and `app-android` so
+//! this logic — and its behavior — only exists once.
 
-use protocol::GameEvent;
 use tokio::sync::mpsc;
+
+use crate::connection::GameEvent;
 
 pub struct OutgoingPosition {
     pub x: f64,
@@ -21,7 +24,7 @@ pub struct NetworkHandle {
 
 impl NetworkHandle {
     /// Queues a position update to be sent to the server. Safe to call
-    /// from the winit main thread every frame — cheap, non-blocking.
+    /// from the game loop's thread every frame — cheap, non-blocking.
     pub fn send_position(&self, pos: OutgoingPosition) {
         let _ = self.position_tx.send(pos);
     }
@@ -38,7 +41,7 @@ pub fn connect(host: String, port: u16, username: String) -> NetworkHandle {
             .expect("failed to build network runtime");
 
         runtime.block_on(async move {
-            let mut conn = match protocol::MinecraftConnection::connect(&host, port, &username).await {
+            let mut conn = match crate::connection::MinecraftConnection::connect(&host, port, &username).await {
                 Ok(conn) => conn,
                 Err(e) => {
                     log::error!("failed to connect to {host}:{port}: {e}");

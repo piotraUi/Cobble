@@ -15,6 +15,7 @@ pub mod geometry;
 pub mod input;
 pub mod screens;
 pub mod style;
+pub mod touch;
 pub mod widgets;
 
 pub use draw_list::{DrawList, Painter, Quad};
@@ -22,4 +23,5 @@ pub use font::Font;
 pub use geometry::{Color, Rect};
 pub use input::UiInput;
 pub use screens::{Action, Screen};
+pub use touch::TouchController;
 pub use widgets::{Button, TextField};

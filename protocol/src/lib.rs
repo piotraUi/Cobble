@@ -18,7 +18,9 @@ pub mod frame;
 pub mod io;
 pub mod packets;
 pub mod state;
+pub mod threaded;
 pub mod varint;
 
 pub use connection::{GameEvent, MinecraftConnection, PROTOCOL_VERSION};
 pub use error::{ProtocolError, Result};
+pub use threaded::{connect, NetworkHandle, OutgoingPosition};

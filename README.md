@@ -111,8 +111,48 @@ playtesting by hand — none of the networking/physics/rendering code was
 exercised against live server traffic or a real GPU in development (see
 the note below).
 
-**Next up (step 6):** Android controls (virtual joystick, touch look,
-touch buttons) and an `.apk` build via `cargo-ndk`/`cargo-apk`.
+**Step 6 (done):** `app-android` runs the exact same
+`client_core`/`renderer`/`ui`/`protocol`/`texturepacks` stack as
+`app-desktop`, entered via `android-activity` instead of a desktop
+window, and driven by `ui::TouchController` instead of keyboard/mouse:
+a virtual joystick (bottom-left) for movement, drag-anywhere-else for
+look, and jump/mine/place buttons (bottom-right); tapping a menu screen
+is treated as a click on whatever's under it, so the exact same
+`ui::screens::Screen` state machine drives both platforms. Reaching
+this needed one real cross-platform fix: `reqwest`'s default TLS
+backend (`native-tls`) needs a system OpenSSL install, which doesn't
+exist for Android cross-compilation, so the whole workspace now uses
+`rustls-tls` instead (pure Rust, no system dependency) — re-verified
+against the live Modrinth API after the switch.
+
+Build it with (needs the Android NDK r26+ and an SDK with
+`platform-tools` + `build-tools;33.0.2` + `platforms;android-33`,
+`ANDROID_NDK_HOME`/`ANDROID_HOME` pointing at them, and
+`rustup target add aarch64-linux-android`):
+
+```
+cargo install cargo-apk   # once
+cd app-android
+cargo apk build --release --target aarch64-linux-android
+# -> target/release/apk/app-android.apk
+```
+
+This produced a real, correctly-signed `.apk` (`net.cobble.client`,
+`INTERNET`/`ACCESS_NETWORK_STATE` permissions, `arm64-v8a` native
+library) in development — confirmed with `aapt dump badging` — but
+**was never installed on a real device or emulator**, since none was
+available in that environment. Treat the touch/IME handling in
+`app-android/src/lib.rs` as reviewed, not verified; the underlying game
+logic it drives (physics, rendering, protocol, texture packs) is the
+same code exercised by `app-desktop`'s tests.
+
+Hotbar slot selection isn't wired to touch taps yet (the HUD draws the
+slots, but tapping one doesn't do anything — there's no inventory to
+select from yet either), and mine/place have no world-editing effect
+to trigger since that's not implemented on any platform yet.
+
+**Next up (step 7):** polish — real block/sky lighting, water/lava
+animation, sound, and other players' entities.
 
 ### A note on testing this in CI/sandboxed environments
 
@@ -121,7 +161,9 @@ drivers, so `wgpu` surface creation panics there — this is an
 environment limitation, not a code issue (the workspace builds clean
 with zero `clippy` warnings, and non-rendering logic has direct unit
 test coverage as noted above). Run it on a real desktop with a GPU to
-see it render.
+see it render. Similarly, there was no Android device or emulator
+available to actually run the `.apk` on, even though it does build —
+see the step 6 note above.
 
 ## Legal note
 

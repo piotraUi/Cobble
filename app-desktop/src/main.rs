@@ -13,18 +13,14 @@
 //! instead of jumping straight to the demo chunk. Passing a server
 //! address still skips the menu entirely, for quick testing.
 
-mod network;
-mod texturepack_fetch;
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use client_core::{Camera, Chunk, ChunkColumn, InputState, PlayerPhysics, World};
 use glam::Vec3;
-use network::OutgoingPosition;
-use protocol::GameEvent;
+use protocol::{GameEvent, OutgoingPosition};
 use renderer::{mesh_world, GpuState};
-use texturepack_fetch::PickerEvent;
+use texturepacks::PickerEvent;
 use ui::screens::{draw_hud, Action, PickerStatus, Screen, TexturePackPickerScreen};
 use ui::{Font, Painter, UiInput};
 use winit::{
@@ -45,7 +41,7 @@ struct Session {
     world: World,
     physics: PlayerPhysics,
     world_dirty: bool,
-    net: Option<network::NetworkHandle>,
+    net: Option<protocol::NetworkHandle>,
     /// True once we've received a real spawn position from the server
     /// (or immediately, in demo mode) — until then we don't send
     /// position updates, since we'd just be reporting the placeholder
@@ -71,7 +67,7 @@ impl Session {
         }
     }
 
-    fn networked(net: network::NetworkHandle) -> Self {
+    fn networked(net: protocol::NetworkHandle) -> Self {
         Self {
             world: World::new(),
             physics: PlayerPhysics::new(Vec3::new(0.0, 80.0, 0.0)),
@@ -169,7 +165,7 @@ fn main() {
         Some(addr) => {
             let (host, port) = parse_address(&addr);
             log::info!("connecting to {host}:{port} as {username}...");
-            session = Some(Session::networked(network::connect(host, port, username)));
+            session = Some(Session::networked(protocol::connect(host, port, username)));
             Mode::InGame
         }
         None => Mode::Ui(Screen::MainMenu),
@@ -411,25 +407,25 @@ fn apply_menu_action(
         }
         Action::GoToTexturePacks => {
             *mode = Mode::Ui(Screen::TexturePackPicker(TexturePackPickerScreen::new()));
-            *picker_events = Some(texturepack_fetch::search());
+            *picker_events = Some(texturepacks::threaded::search());
         }
         Action::Connect { host, username } => {
             let (host, port) = parse_address(&host);
             log::info!("connecting to {host}:{port} as {username}...");
-            *session = Some(Session::networked(network::connect(host, port, username)));
+            *session = Some(Session::networked(protocol::connect(host, port, username)));
             *mode = Mode::InGame;
             capture_mouse(window, mouse_captured);
         }
         Action::BackToMenu => *mode = Mode::Ui(Screen::MainMenu),
         Action::RequestTexturePackSearch => {
-            *picker_events = Some(texturepack_fetch::search());
+            *picker_events = Some(texturepacks::threaded::search());
         }
         Action::SelectTexturePack { index } => {
             if let Mode::Ui(Screen::TexturePackPicker(picker)) = mode {
                 if let PickerStatus::Loaded(hits) = &picker.status {
                     if let Some(hit) = hits.get(index).cloned() {
                         picker.status = PickerStatus::Downloading { title: hit.title.clone() };
-                        *picker_events = Some(texturepack_fetch::download_and_load(hit));
+                        *picker_events = Some(texturepacks::threaded::download_and_load(hit));
                     }
                 }
             }
