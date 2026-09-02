@@ -168,6 +168,7 @@ dependencies = [
  "pollster",
  "protocol",
  "renderer",
+ "texturepacks",
  "tokio",
  "wgpu",
  "winit",
@@ -2128,6 +2129,7 @@ dependencies = [
  "client-core",
  "glam",
  "log",
+ "texturepacks",
  "wgpu",
  "winit",
 ]

@@ -11,7 +11,7 @@ use image::RgbaImage;
 use crate::atlas::{build_atlas, TextureAtlas};
 use crate::coverage::{check_archive_coverage, CoverageReport};
 use crate::error::Result;
-use crate::fallback::generate_fallback_texture;
+use crate::fallback::{generate_fallback_texture, generate_missing_texture};
 use crate::known_textures::{BLOCK_TEXTURES, ITEM_TEXTURES};
 use crate::modrinth::VersionFile;
 use crate::pack::{read_pack_meta, PackMeta};
@@ -33,6 +33,28 @@ pub fn item_atlas_key(name: &str) -> String {
     format!("items/{name}")
 }
 
+/// Reserved atlas key for the classic magenta/black "missing texture"
+/// tile, always present in every atlas this crate builds — used by the
+/// renderer for block ids it has no texture mapping for at all.
+pub const MISSING_TEXTURE_KEY: &str = "missing";
+
+/// Builds an atlas covering every known block/item name with nothing
+/// but the neutral fallback checker — no pack, no zip, no network.
+/// This is what the renderer uses before the player has picked (or
+/// while they haven't picked) a texture pack, so the world is always
+/// texturable.
+pub fn build_fallback_atlas() -> TextureAtlas {
+    let mut tiles = Vec::with_capacity(BLOCK_TEXTURES.len() + ITEM_TEXTURES.len() + 1);
+    tiles.push((MISSING_TEXTURE_KEY.to_string(), generate_missing_texture()));
+    for &name in BLOCK_TEXTURES {
+        tiles.push((block_atlas_key(name), generate_fallback_texture()));
+    }
+    for &name in ITEM_TEXTURES {
+        tiles.push((item_atlas_key(name), generate_fallback_texture()));
+    }
+    build_atlas(tiles)
+}
+
 pub fn load_pack_from_zip(path: &Path) -> Result<LoadedPack> {
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -42,7 +64,8 @@ pub fn load_pack_from_zip(path: &Path) -> Result<LoadedPack> {
 
     let file_names: Vec<String> = archive.file_names().map(str::to_string).collect();
 
-    let mut tiles = Vec::with_capacity(BLOCK_TEXTURES.len() + ITEM_TEXTURES.len());
+    let mut tiles = Vec::with_capacity(BLOCK_TEXTURES.len() + ITEM_TEXTURES.len() + 1);
+    tiles.push((MISSING_TEXTURE_KEY.to_string(), generate_missing_texture()));
     for &name in BLOCK_TEXTURES {
         let key = block_atlas_key(name);
         let relative = format!("assets/minecraft/textures/blocks/{name}.png");
@@ -129,6 +152,31 @@ mod tests {
             writer.finish().unwrap();
         }
         buf
+    }
+
+    #[test]
+    fn fallback_atlas_covers_every_known_texture_with_no_pack_at_all() {
+        let atlas = build_fallback_atlas();
+        for &name in BLOCK_TEXTURES {
+            assert!(atlas.rect(&block_atlas_key(name)).is_some());
+        }
+        for &name in ITEM_TEXTURES {
+            assert!(atlas.rect(&item_atlas_key(name)).is_some());
+        }
+        assert!(atlas.rect(MISSING_TEXTURE_KEY).is_some());
+    }
+
+    #[test]
+    fn loaded_pack_atlas_also_has_the_missing_texture_tile() {
+        let dir = std::env::temp_dir().join(format!("cobble-test-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pack.zip");
+        std::fs::write(&path, build_test_pack(false)).unwrap();
+
+        let loaded = load_pack_from_zip(&path).unwrap();
+        assert!(loaded.atlas.rect(MISSING_TEXTURE_KEY).is_some());
+
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

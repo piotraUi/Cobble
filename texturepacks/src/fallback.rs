@@ -27,6 +27,25 @@ pub fn generate_fallback_texture() -> RgbaImage {
     })
 }
 
+const MISSING_A: Rgba<u8> = Rgba([230, 20, 230, 255]);
+const MISSING_B: Rgba<u8> = Rgba([20, 20, 20, 255]);
+
+/// The classic magenta/black "missing texture" checker — a generic
+/// computer-graphics convention (not a Mojang asset) used only when
+/// the renderer has no texture *mapping* at all for a block id, which
+/// is a different, rarer case than a pack simply not covering a known
+/// name (that uses `generate_fallback_texture` instead).
+pub fn generate_missing_texture() -> RgbaImage {
+    RgbaImage::from_fn(TEXTURE_SIZE, TEXTURE_SIZE, |x, y| {
+        let checker = (x / CELL_SIZE + y / CELL_SIZE).is_multiple_of(2);
+        if checker {
+            MISSING_A
+        } else {
+            MISSING_B
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

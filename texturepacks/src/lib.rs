@@ -22,7 +22,10 @@ pub mod pack;
 pub use atlas::{AtlasRect, TextureAtlas};
 pub use coverage::CoverageReport;
 pub use error::{Result, TexturePackError};
-pub use load::{download_and_load, load_pack_from_zip, LoadedPack};
+pub use load::{
+    block_atlas_key, build_fallback_atlas, download_and_load, item_atlas_key, load_pack_from_zip,
+    LoadedPack, MISSING_TEXTURE_KEY,
+};
 pub use modrinth::MODRINTH_API_BASE;
 pub use pack::PackMeta;
 

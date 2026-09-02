@@ -39,6 +39,31 @@ modes; the demo chunk is now a real physics playground (spawns falling
 onto it) instead of just something to fly around. Entities and inventory
 still aren't implemented (later steps).
 
+**Step 4 (done):** the `texturepacks` crate talks to the real Modrinth
+API — searching resource packs for a game version, listing a project's
+versions, and downloading + caching a pack's `.zip` by SHA-1 (so
+re-selecting an already-downloaded pack never re-fetches it). It
+validates `pack.mcmeta`'s `pack_format` (1 for 1.8.x, flagged but not
+hard-rejected otherwise), checks how many of a hardcoded list of known
+1.8.9 block/item textures the pack actually provides, and packs
+whatever's present — plus an original, non-Mojang neutral gray
+checkerboard fallback for anything missing — into one square texture
+atlas with a UV rect per name.
+
+**Step 5, part 1 (done):** the world renderer is texture-mapped now —
+`renderer::block_textures` maps the handful of block ids `client_core`
+currently knows about to atlas tile names (grass/logs get distinct
+top/bottom/side textures), vertices carry real UVs, and the shader
+samples the atlas with nearest-neighbor filtering (pixel-perfect, no
+blur) instead of flat per-vertex debug colors. A block id with no
+texture mapping — which, against a real server, is most of them right
+now, since only ~10 are mapped — renders with a reserved magenta/black
+"missing texture" tile instead of silently going untextured. There's no
+texture-pack picker UI yet, so the app always starts from
+`texturepacks::build_fallback_atlas()` (every known name rendered as
+the neutral gray checker) — selecting a real downloaded pack, plus the
+rest of the Minecraft-styled menu/HUD, is still to come.
+
 Run without arguments for the old hardcoded demo chunk:
 
 ```
@@ -60,35 +85,26 @@ The trickiest parts have unit tests: `cargo test -p protocol` covers the
 packing, and packet compression; `cargo test -p client-core` covers the
 AABB collision (falling and landing, jumping, sliding to a stop against
 a wall); `cargo test -p texturepacks` covers `pack.mcmeta` parsing,
-coverage counting, and atlas packing against synthetic zips. There's
-also a network-gated integration test that exercises the real Modrinth
-API end to end (search → download → cache → validate → atlas) — it's
-`#[ignore]`d by default since it needs network access:
+coverage counting, and atlas packing against synthetic zips; `cargo test
+-p renderer` covers the block-id-to-texture mapping and that meshing
+produces the right face count and stays within the right atlas tile's
+UV rect. There's also a network-gated integration test that exercises
+the real Modrinth API end to end (search → download → cache → validate
+→ atlas) — it's `#[ignore]`d by default since it needs network access:
 
 ```
 cargo test -p texturepacks --test live_modrinth -- --ignored --nocapture
 ```
 
 Still worth running the desktop client against a real server and
-playtesting by hand — none of the networking/physics code was
+playtesting by hand — none of the networking/physics/rendering code was
 exercised against live server traffic or a real GPU in development (see
 the note below).
 
-**Step 4 (done):** the `texturepacks` crate talks to the real Modrinth
-API — searching resource packs for a game version, listing a project's
-versions, and downloading + caching a pack's `.zip` by SHA-1 (so
-re-selecting an already-downloaded pack never re-fetches it). It
-validates `pack.mcmeta`'s `pack_format` (1 for 1.8.x, flagged but not
-hard-rejected otherwise), checks how many of a hardcoded list of known
-1.8.9 block/item textures the pack actually provides, and packs
-whatever's present — plus an original, non-Mojang neutral gray
-checkerboard fallback for anything missing — into one square texture
-atlas with a UV rect per name. Not wired into rendering yet (still flat
-debug colors); that, plus the pack-picker UI, is step 5.
-
-**Next up (step 5):** the `ui` crate — a Minecraft-styled main menu and
-texture pack picker rendered directly with `wgpu`, plus wiring the new
-atlas into the world renderer and HUD instead of flat debug colors.
+**Next up (step 5, part 2):** the `ui` crate — a Minecraft-styled main
+menu, texture pack picker (wiring a real downloaded pack's atlas into
+the renderer instead of just the fallback), and in-game HUD, all
+rendered directly with `wgpu`.
 
 ### A note on testing this in CI/sandboxed environments
 

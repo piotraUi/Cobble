@@ -3,9 +3,14 @@
 //! Roadmap step 1: hardcoded demo chunk, no networking.
 //! Roadmap step 2: `cobble <host[:port]> [username]` connects to a real
 //! Minecraft 1.8.9 server and renders the real world.
-//! Roadmap step 3 (this file now): the player is a real AABB with
-//! gravity and block collision (see `client_core::physics`) instead of
-//! a free-fly camera, in both the demo chunk and networked modes.
+//! Roadmap step 3: the player is a real AABB with gravity and block
+//! collision (see `client_core::physics`) instead of a free-fly
+//! camera, in both the demo chunk and networked modes.
+//! Roadmap step 5 (this file now, partial): the world renders with a
+//! real texture atlas (nearest-neighbor sampled) instead of flat debug
+//! colors. No texture pack picker UI yet — that (and the rest of the
+//! Minecraft-styled menu/HUD) is still to come, so we always start
+//! from the fallback-only atlas (`texturepacks::build_fallback_atlas`).
 
 mod network;
 
@@ -139,6 +144,12 @@ fn main() {
     let aspect = gpu.size.0 as f32 / gpu.size.1 as f32;
     let mut camera = Camera::new(Vec3::new(8.0, 20.0, 8.0), aspect);
 
+    // No texture pack picker yet (that's the rest of roadmap step 5) —
+    // start from the fallback-only atlas so blocks always render with
+    // *some* texture instead of flat debug colors.
+    let atlas = texturepacks::build_fallback_atlas();
+    gpu.set_atlas_texture(&atlas);
+
     let mut session = match server_arg {
         Some(addr) => {
             let (host, port) = parse_address(&addr);
@@ -196,7 +207,7 @@ fn main() {
 
                         session.drain_network_events();
                         if session.world_dirty {
-                            let (vertices, indices) = mesh_world(&session.world);
+                            let (vertices, indices) = mesh_world(&session.world, &atlas);
                             if !indices.is_empty() {
                                 gpu.set_chunk_mesh(&vertices, &indices);
                             }

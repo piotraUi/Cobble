@@ -19,3 +19,4 @@ env_logger.workspace = true
 client-core.workspace = true
 renderer.workspace = true
 protocol.workspace = true
+texturepacks.workspace = true

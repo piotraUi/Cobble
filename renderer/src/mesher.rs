@@ -1,23 +1,33 @@
 use client_core::chunk_column::WORLD_HEIGHT;
-use client_core::{Chunk, World, CHUNK_SIZE};
+use client_core::{BlockId, Chunk, World, CHUNK_SIZE};
+use texturepacks::TextureAtlas;
 
+use crate::block_textures::{face_uv, FaceKind};
 use crate::vertex::Vertex;
 
 /// The 6 axis-aligned cube faces, each described by its outward normal,
 /// a simple directional shading factor (stand-in for real block/sky
-/// light until the protocol crate delivers real light data), and the
-/// 4 corner offsets (in CCW winding order when viewed from outside).
+/// light until the protocol crate delivers real light data), which
+/// texture (top/bottom/side) it should sample, and the 4 corner
+/// offsets (in CCW winding order when viewed from outside).
 struct Face {
     normal: [f32; 3],
     shade: f32,
+    kind: FaceKind,
     corners: [[f32; 3]; 4],
 }
+
+/// Texture-space corners matching `Face::corners`' winding order, the
+/// same for every face — Minecraft-style block textures tile/mirror
+/// fine under any of the 4 rotations, so one fixed mapping is enough.
+const UV_CORNERS: [[f32; 2]; 4] = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
 
 const FACES: [Face; 6] = [
     // +X (east)
     Face {
         normal: [1.0, 0.0, 0.0],
         shade: 0.8,
+        kind: FaceKind::Side,
         corners: [
             [1.0, 0.0, 0.0],
             [1.0, 0.0, 1.0],
@@ -29,6 +39,7 @@ const FACES: [Face; 6] = [
     Face {
         normal: [-1.0, 0.0, 0.0],
         shade: 0.8,
+        kind: FaceKind::Side,
         corners: [
             [0.0, 0.0, 1.0],
             [0.0, 0.0, 0.0],
@@ -40,6 +51,7 @@ const FACES: [Face; 6] = [
     Face {
         normal: [0.0, 1.0, 0.0],
         shade: 1.0,
+        kind: FaceKind::Top,
         corners: [
             [0.0, 1.0, 1.0],
             [1.0, 1.0, 1.0],
@@ -51,6 +63,7 @@ const FACES: [Face; 6] = [
     Face {
         normal: [0.0, -1.0, 0.0],
         shade: 0.5,
+        kind: FaceKind::Bottom,
         corners: [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -62,6 +75,7 @@ const FACES: [Face; 6] = [
     Face {
         normal: [0.0, 0.0, 1.0],
         shade: 0.9,
+        kind: FaceKind::Side,
         corners: [
             [1.0, 0.0, 1.0],
             [0.0, 0.0, 1.0],
@@ -73,6 +87,7 @@ const FACES: [Face; 6] = [
     Face {
         normal: [0.0, 0.0, -1.0],
         shade: 0.7,
+        kind: FaceKind::Side,
         corners: [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -92,11 +107,50 @@ const NEIGHBOR_OFFSETS: [(isize, isize, isize); 6] = [
     (0, 0, -1),
 ];
 
+/// Emits one face's two triangles into `vertices`/`indices`, sampling
+/// `atlas` for the UV rect and applying `shade` as a flat per-vertex
+/// light stand-in (see `Face::shade`).
+#[allow(clippy::too_many_arguments)]
+fn push_face(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    atlas: &TextureAtlas,
+    block: BlockId,
+    face: &Face,
+    origin: [f32; 3],
+) {
+    let (u0, v0, u1, v1) = face_uv(atlas, block, face.kind);
+    let shade = [face.shade, face.shade, face.shade];
+
+    let base_index = vertices.len() as u32;
+    for (corner, uv_corner) in face.corners.iter().zip(UV_CORNERS.iter()) {
+        vertices.push(Vertex {
+            position: [
+                origin[0] + corner[0],
+                origin[1] + corner[1],
+                origin[2] + corner[2],
+            ],
+            normal: face.normal,
+            color: shade,
+            uv: [u0 + uv_corner[0] * (u1 - u0), v0 + uv_corner[1] * (v1 - v0)],
+        });
+    }
+
+    indices.extend_from_slice(&[
+        base_index,
+        base_index + 1,
+        base_index + 2,
+        base_index,
+        base_index + 2,
+        base_index + 3,
+    ]);
+}
+
 /// Builds a mesh for `chunk` using simple per-face culling: a face is
 /// only emitted when the block on the other side of it is missing or
 /// non-opaque, so fully-buried faces never reach the GPU. This is not
 /// greedy meshing yet, just the "at least" bar from the roadmap.
-pub fn mesh_chunk(chunk: &Chunk) -> (Vec<Vertex>, Vec<u32>) {
+pub fn mesh_chunk(chunk: &Chunk, atlas: &TextureAtlas) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -107,8 +161,6 @@ pub fn mesh_chunk(chunk: &Chunk) -> (Vec<Vertex>, Vec<u32>) {
                 if block.is_air() {
                     continue;
                 }
-
-                let color = block.debug_color();
 
                 for (face, offset) in FACES.iter().zip(NEIGHBOR_OFFSETS.iter()) {
                     let (nx, ny, nz) = (
@@ -127,33 +179,14 @@ pub fn mesh_chunk(chunk: &Chunk) -> (Vec<Vertex>, Vec<u32>) {
                         continue;
                     }
 
-                    let base_index = vertices.len() as u32;
-                    let shaded_color = [
-                        color[0] * face.shade,
-                        color[1] * face.shade,
-                        color[2] * face.shade,
-                    ];
-
-                    for corner in face.corners.iter() {
-                        vertices.push(Vertex {
-                            position: [
-                                x as f32 + corner[0],
-                                y as f32 + corner[1],
-                                z as f32 + corner[2],
-                            ],
-                            normal: face.normal,
-                            color: shaded_color,
-                        });
-                    }
-
-                    indices.extend_from_slice(&[
-                        base_index,
-                        base_index + 1,
-                        base_index + 2,
-                        base_index,
-                        base_index + 2,
-                        base_index + 3,
-                    ]);
+                    push_face(
+                        &mut vertices,
+                        &mut indices,
+                        atlas,
+                        block,
+                        face,
+                        [x as f32, y as f32, z as f32],
+                    );
                 }
             }
         }
@@ -168,7 +201,7 @@ pub fn mesh_chunk(chunk: &Chunk) -> (Vec<Vertex>, Vec<u32>) {
 /// Rebuilding the whole world mesh on every chunk load is not cheap,
 /// but it's the simplest thing that's correct — see roadmap step 7 for
 /// per-chunk incremental meshing.
-pub fn mesh_world(world: &World) -> (Vec<Vertex>, Vec<u32>) {
+pub fn mesh_world(world: &World, atlas: &TextureAtlas) -> (Vec<Vertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -186,7 +219,6 @@ pub fn mesh_world(world: &World) -> (Vec<Vertex>, Vec<u32>) {
 
                     let world_x = base_x + x as i32;
                     let world_z = base_z + z as i32;
-                    let color = block.debug_color();
 
                     for (face, offset) in FACES.iter().zip(NEIGHBOR_OFFSETS.iter()) {
                         let neighbor_opaque = world
@@ -196,33 +228,14 @@ pub fn mesh_world(world: &World) -> (Vec<Vertex>, Vec<u32>) {
                             continue;
                         }
 
-                        let base_index = vertices.len() as u32;
-                        let shaded_color = [
-                            color[0] * face.shade,
-                            color[1] * face.shade,
-                            color[2] * face.shade,
-                        ];
-
-                        for corner in face.corners.iter() {
-                            vertices.push(Vertex {
-                                position: [
-                                    world_x as f32 + corner[0],
-                                    y as f32 + corner[1],
-                                    world_z as f32 + corner[2],
-                                ],
-                                normal: face.normal,
-                                color: shaded_color,
-                            });
-                        }
-
-                        indices.extend_from_slice(&[
-                            base_index,
-                            base_index + 1,
-                            base_index + 2,
-                            base_index,
-                            base_index + 2,
-                            base_index + 3,
-                        ]);
+                        push_face(
+                            &mut vertices,
+                            &mut indices,
+                            atlas,
+                            block,
+                            face,
+                            [world_x as f32, y as f32, world_z as f32],
+                        );
                     }
                 }
             }
@@ -230,4 +243,54 @@ pub fn mesh_world(world: &World) -> (Vec<Vertex>, Vec<u32>) {
     }
 
     (vertices, indices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use client_core::BlockId;
+
+    #[test]
+    fn single_block_produces_6_culled_faces_all_within_its_own_atlas_tile() {
+        let atlas = texturepacks::build_fallback_atlas();
+        let mut chunk = Chunk::empty();
+        chunk.set(5, 5, 5, BlockId::STONE);
+
+        let (vertices, indices) = mesh_chunk(&chunk, &atlas);
+
+        assert_eq!(indices.len(), 6 * 6, "6 faces * 2 triangles * 3 indices");
+        assert_eq!(vertices.len(), 6 * 4, "6 faces * 4 corners, unwelded");
+
+        let (u0, v0, u1, v1) = atlas.uv(&texturepacks::block_atlas_key("stone")).unwrap();
+        for vertex in &vertices {
+            assert!(vertex.uv[0] >= u0 - 1e-6 && vertex.uv[0] <= u1 + 1e-6);
+            assert!(vertex.uv[1] >= v0 - 1e-6 && vertex.uv[1] <= v1 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn buried_block_contributes_no_faces() {
+        let atlas = texturepacks::build_fallback_atlas();
+        let mut chunk = Chunk::empty();
+        // A center block fully surrounded by 6 opaque neighbors (each
+        // neighbor touches only the center, not each other, so every
+        // neighbor is itself missing exactly the one face pointing at
+        // the center — 5 exposed faces apiece).
+        chunk.set(5, 5, 5, BlockId::STONE);
+        for (dx, dy, dz) in [
+            (1, 0, 0),
+            (-1, 0, 0),
+            (0, 1, 0),
+            (0, -1, 0),
+            (0, 0, 1),
+            (0, 0, -1),
+        ] {
+            chunk.set((5 + dx) as usize, (5 + dy) as usize, (5 + dz) as usize, BlockId::STONE);
+        }
+
+        let (vertices, indices) = mesh_chunk(&chunk, &atlas);
+        let expected_faces = 6 * 5; // 6 neighbors * 5 exposed faces each; center contributes 0
+        assert_eq!(vertices.len(), expected_faces * 4);
+        assert_eq!(indices.len(), expected_faces * 6);
+    }
 }

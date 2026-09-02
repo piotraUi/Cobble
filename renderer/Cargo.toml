@@ -10,4 +10,5 @@ winit.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 client-core.workspace = true
+texturepacks.workspace = true
 log.workspace = true
