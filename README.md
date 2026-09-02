@@ -205,6 +205,22 @@ other players' entities.
   supplies its own: `app-desktop` still uses `default_cache_dir()`,
   `app-android` uses `AndroidApp::internal_data_path()` (with a
   `std::env::temp_dir()` fallback if that's ever `None`).
+- *Block side faces invisible from outside, only visible from inside a
+  block ("faces są w środku").* The 6 cube faces in `renderer::mesher`
+  are each declared as 4 corners plus an outward `normal`, but the
+  `+X`/`-X`/`+Z`/`-Z` (all 4 side faces — only `+Y`/`-Y` top/bottom
+  were fine) corner lists actually wound *clockwise* as seen from
+  outside, not the counter-clockwise order the pipeline's
+  `front_face: Ccw` + backface culling expects (verified by computing
+  each face's real triangle normal via the right-hand rule and
+  comparing it against the declared `normal` — see the new
+  `every_faces_first_triangle_winds_outward` test). With backface
+  culling on, a clockwise-from-outside face is invisible from outside
+  and only renders from inside the block — exactly the "inside-out"
+  look reported. Fixed by flipping the triangle read order for just
+  those 4 faces (`Face::reversed_winding` in `mesher.rs`) rather than
+  reordering their corners, which would've also required a mirrored
+  UV mapping to avoid flipping textures upside down on those faces.
 - *UI too small on phones.* Menu buttons, text, and the touch
   joystick/buttons are laid out with fixed pixel constants
   (`BUTTON_WIDTH`, `JOYSTICK_RADIUS`, ...), authored assuming 1

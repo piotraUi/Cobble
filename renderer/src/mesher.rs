@@ -33,6 +33,16 @@ struct Face {
     shade: f32,
     kind: FaceKind,
     corners: [[f32; 3]; 4],
+    /// True when `corners` walks its 4 points clockwise as seen from
+    /// outside the cube (along `normal`) instead of the counter-
+    /// clockwise order the pipeline's `front_face: Ccw` + backface
+    /// culling expects. Rather than reorder `corners` (which would also
+    /// have to be paired with a different `UV_CORNERS` slice to avoid
+    /// mirroring the texture), `push_face` just reads the same 4
+    /// vertices into their triangles in the opposite order for these
+    /// faces, which flips the winding without touching position or UV
+    /// data at all.
+    reversed_winding: bool,
 }
 
 /// Texture-space corners matching `Face::corners`' winding order, the
@@ -52,6 +62,7 @@ const FACES: [Face; 6] = [
             [1.0, 1.0, 1.0],
             [1.0, 1.0, 0.0],
         ],
+        reversed_winding: true,
     },
     // -X (west)
     Face {
@@ -64,6 +75,7 @@ const FACES: [Face; 6] = [
             [0.0, 1.0, 0.0],
             [0.0, 1.0, 1.0],
         ],
+        reversed_winding: true,
     },
     // +Y (up)
     Face {
@@ -76,6 +88,7 @@ const FACES: [Face; 6] = [
             [1.0, 1.0, 0.0],
             [0.0, 1.0, 0.0],
         ],
+        reversed_winding: false,
     },
     // -Y (down)
     Face {
@@ -88,6 +101,7 @@ const FACES: [Face; 6] = [
             [1.0, 0.0, 1.0],
             [0.0, 0.0, 1.0],
         ],
+        reversed_winding: false,
     },
     // +Z (south)
     Face {
@@ -100,6 +114,7 @@ const FACES: [Face; 6] = [
             [0.0, 1.0, 1.0],
             [1.0, 1.0, 1.0],
         ],
+        reversed_winding: true,
     },
     // -Z (north)
     Face {
@@ -112,6 +127,7 @@ const FACES: [Face; 6] = [
             [1.0, 1.0, 0.0],
             [0.0, 1.0, 0.0],
         ],
+        reversed_winding: true,
     },
 ];
 
@@ -158,14 +174,25 @@ fn push_face(
         });
     }
 
-    indices.extend_from_slice(&[
-        base_index,
-        base_index + 1,
-        base_index + 2,
-        base_index,
-        base_index + 2,
-        base_index + 3,
-    ]);
+    if face.reversed_winding {
+        indices.extend_from_slice(&[
+            base_index,
+            base_index + 2,
+            base_index + 1,
+            base_index,
+            base_index + 3,
+            base_index + 2,
+        ]);
+    } else {
+        indices.extend_from_slice(&[
+            base_index,
+            base_index + 1,
+            base_index + 2,
+            base_index,
+            base_index + 2,
+            base_index + 3,
+        ]);
+    }
 }
 
 /// Builds a mesh for `chunk` using simple per-face culling: a face is
@@ -280,6 +307,45 @@ pub fn mesh_world(world: &World, atlas: &TextureAtlas) -> (Vec<Vertex>, Vec<u32>
 mod tests {
     use super::*;
     use client_core::BlockId;
+
+    /// Every face's *actual* triangle winding (computed from the
+    /// vertices it emits, not the `Face::normal` field, which is only
+    /// ever a label) must produce an outward-facing normal via the
+    /// right-hand rule — otherwise, with `front_face: Ccw` + backface
+    /// culling in the GPU pipeline, the face renders only when viewed
+    /// from *inside* the block instead of outside. This regression-
+    /// tests the real device bug where all 4 side faces (+X/-X/+Z/-Z)
+    /// had reversed winding and were invisible from outside.
+    #[test]
+    fn every_faces_first_triangle_winds_outward() {
+        for face in &FACES {
+            let a = face.corners[0];
+            let b = face.corners[1];
+            let c = face.corners[2];
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+
+            // The triangle actually drawn is (A,C,B) when reversed_winding
+            // is set — see push_face — so cross the same two edges the
+            // GPU would, in the order it would.
+            let (u, v) = if face.reversed_winding { (ac, ab) } else { (ab, ac) };
+            let cross = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+
+            for axis in 0..3 {
+                assert!(
+                    (cross[axis] - face.normal[axis]).abs() < 1e-6,
+                    "face with normal {:?} winds to {:?} instead (reversed_winding={})",
+                    face.normal,
+                    cross,
+                    face.reversed_winding
+                );
+            }
+        }
+    }
 
     #[test]
     fn single_block_produces_6_culled_faces_all_within_its_own_atlas_tile() {
