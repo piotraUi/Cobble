@@ -3,12 +3,19 @@ use std::sync::Arc;
 use glam::Mat4;
 use wgpu::util::DeviceExt;
 
+use crate::ui_vertex::{build_ui_mesh, UiVertex};
 use crate::vertex::Vertex;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ScreenUniform {
+    size: [f32; 4],
 }
 
 /// Owns the wgpu device/surface and everything needed to render the
@@ -35,6 +42,14 @@ pub struct GpuState {
     chunk_vertex_buffer: Option<wgpu::Buffer>,
     chunk_index_buffer: Option<wgpu::Buffer>,
     chunk_index_count: u32,
+
+    ui_pipeline: wgpu::RenderPipeline,
+    ui_screen_buffer: wgpu::Buffer,
+    ui_screen_bind_group: wgpu::BindGroup,
+    ui_texture_bind_group: wgpu::BindGroup,
+    ui_vertex_buffer: Option<wgpu::Buffer>,
+    ui_index_buffer: Option<wgpu::Buffer>,
+    ui_index_count: u32,
 
     clear_color: wgpu::Color,
 }
@@ -228,6 +243,96 @@ impl GpuState {
             multiview: None,
         });
 
+        // --- 2D UI overlay pipeline (menus/HUD): orthographic
+        // screen-space quads, alpha blended, no depth test, drawn in a
+        // second pass over whatever the world pipeline produced.
+        let ui_screen_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("ui-screen-bind-group-layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let ui_screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ui-screen-buffer"),
+            contents: bytemuck::cast_slice(&[ScreenUniform {
+                size: [size.0 as f32, size.1 as f32, 0.0, 0.0],
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let ui_screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui-screen-bind-group"),
+            layout: &ui_screen_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ui_screen_buffer.as_entire_binding(),
+            }],
+        });
+
+        // Same shape as the world's atlas bind group (texture + nearest
+        // sampler), so it reuses `atlas_bind_group_layout` even though
+        // it holds a different texture (the UI font/white atlas).
+        let ui_texture_bind_group = create_atlas_bind_group(
+            &device,
+            &queue,
+            &atlas_bind_group_layout,
+            &atlas_sampler,
+            1,
+            1,
+            &[255, 255, 255, 255],
+        );
+
+        let ui_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("ui-shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("ui_shader.wgsl").into()),
+        });
+
+        let ui_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ui-pipeline-layout"),
+            bind_group_layouts: &[&ui_screen_bind_group_layout, &atlas_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let ui_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ui-pipeline"),
+            layout: Some(&ui_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &ui_shader,
+                entry_point: "vs_main",
+                buffers: &[UiVertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &ui_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         Self {
             surface,
             device,
@@ -244,6 +349,13 @@ impl GpuState {
             chunk_vertex_buffer: None,
             chunk_index_buffer: None,
             chunk_index_count: 0,
+            ui_pipeline,
+            ui_screen_buffer,
+            ui_screen_bind_group,
+            ui_texture_bind_group,
+            ui_vertex_buffer: None,
+            ui_index_buffer: None,
+            ui_index_count: 0,
             clear_color: wgpu::Color {
                 r: 0.53,
                 g: 0.81,
@@ -262,6 +374,13 @@ impl GpuState {
         self.config.height = new_size.1;
         self.surface.configure(&self.device, &self.config);
         self.depth_texture_view = create_depth_texture_view(&self.device, new_size.0, new_size.1);
+        self.queue.write_buffer(
+            &self.ui_screen_buffer,
+            0,
+            bytemuck::cast_slice(&[ScreenUniform {
+                size: [new_size.0 as f32, new_size.1 as f32, 0.0, 0.0],
+            }]),
+        );
     }
 
     pub fn set_chunk_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) {
@@ -295,6 +414,44 @@ impl GpuState {
             atlas.image.height(),
             atlas.image.as_raw(),
         );
+    }
+
+    /// Uploads the UI's font/white atlas (see `ui::Font::atlas`) —
+    /// called once at startup, this doesn't change at runtime.
+    pub fn set_ui_texture(&mut self, image: &image::RgbaImage) {
+        self.ui_texture_bind_group = create_atlas_bind_group(
+            &self.device,
+            &self.queue,
+            &self.atlas_bind_group_layout,
+            &self.atlas_sampler,
+            image.width(),
+            image.height(),
+            image.as_raw(),
+        );
+    }
+
+    /// Uploads this frame's UI draw list (menu/HUD quads) as the mesh
+    /// `render` draws in its second pass. Pass an empty draw list (or
+    /// skip calling this) to draw no UI overlay this frame.
+    pub fn set_ui_draw_list(&mut self, draw_list: &ui::DrawList) {
+        let (vertices, indices) = build_ui_mesh(draw_list);
+        if indices.is_empty() {
+            self.ui_vertex_buffer = None;
+            self.ui_index_buffer = None;
+            self.ui_index_count = 0;
+            return;
+        }
+        self.ui_vertex_buffer = Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ui-vertex-buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+        self.ui_index_buffer = Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ui-index-buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        }));
+        self.ui_index_count = indices.len() as u32;
     }
 
     pub fn update_camera(&self, view_proj: Mat4) {
@@ -350,6 +507,29 @@ impl GpuState {
                 render_pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..self.chunk_index_count, 0, 0..1);
             }
+        }
+
+        if let (Some(vbuf), Some(ibuf)) = (&self.ui_vertex_buffer, &self.ui_index_buffer) {
+            let mut ui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ui-render-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            ui_pass.set_pipeline(&self.ui_pipeline);
+            ui_pass.set_bind_group(0, &self.ui_screen_bind_group, &[]);
+            ui_pass.set_bind_group(1, &self.ui_texture_bind_group, &[]);
+            ui_pass.set_vertex_buffer(0, vbuf.slice(..));
+            ui_pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            ui_pass.draw_indexed(0..self.ui_index_count, 0, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

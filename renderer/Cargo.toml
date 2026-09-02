@@ -11,4 +11,6 @@ bytemuck.workspace = true
 glam.workspace = true
 client-core.workspace = true
 texturepacks.workspace = true
+ui.workspace = true
+image.workspace = true
 log.workspace = true

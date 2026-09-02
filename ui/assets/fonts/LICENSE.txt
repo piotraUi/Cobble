@@ -1,0 +1,10 @@
+Font: "Minecraft" (Regular, Bold) by JDGraphics
+Source: https://www.fontspace.com/minecraft-font-f28180
+License: Public Domain (as declared by the author on FontSpace)
+
+This is an independent, fan-made recreation of the Minecraft UI
+typeface's visual style, released to the public domain by its own
+creator. It is not an official Mojang/Microsoft asset and was not
+extracted from the game. Used here for in-app UI text only (menus,
+HUD, buttons) — never for reproducing the Minecraft wordmark/logo,
+which remains Mojang's trademark.

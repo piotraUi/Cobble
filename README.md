@@ -50,7 +50,7 @@ whatever's present — plus an original, non-Mojang neutral gray
 checkerboard fallback for anything missing — into one square texture
 atlas with a UV rect per name.
 
-**Step 5, part 1 (done):** the world renderer is texture-mapped now —
+**Step 5, part 1 (done):** the world renderer is texture-mapped —
 `renderer::block_textures` maps the handful of block ids `client_core`
 currently knows about to atlas tile names (grass/logs get distinct
 top/bottom/side textures), vertices carry real UVs, and the shader
@@ -58,27 +58,32 @@ samples the atlas with nearest-neighbor filtering (pixel-perfect, no
 blur) instead of flat per-vertex debug colors. A block id with no
 texture mapping — which, against a real server, is most of them right
 now, since only ~10 are mapped — renders with a reserved magenta/black
-"missing texture" tile instead of silently going untextured. There's no
-texture-pack picker UI yet, so the app always starts from
-`texturepacks::build_fallback_atlas()` (every known name rendered as
-the neutral gray checker) — selecting a real downloaded pack, plus the
-rest of the Minecraft-styled menu/HUD, is still to come.
+"missing texture" tile instead of silently going untextured.
 
-Run without arguments for the old hardcoded demo chunk:
+**Step 5, part 2 (done):** the `ui` crate is a renderer-agnostic
+Minecraft-styled UI — bitmap text (rasterized at startup from a bundled
+public-domain Minecraft-style font, see `ui/assets/fonts/LICENSE.txt`;
+not a Mojang asset, and used for UI text only, never the logo/wordmark),
+buttons, a text field, and three screens (main menu, multiplayer address
+entry, texture pack picker) plus an in-game crosshair/hotbar HUD — all
+built from one primitive (a textured quad) so solid panels and glyphs
+share a single draw call path. `renderer` turns a screen's `DrawList`
+into an actual `wgpu` pass (2D orthographic, alpha blended, drawn over
+the 3D world). In `app-desktop`, running `cobble` with no arguments now
+opens that menu — Singleplayer starts the demo chunk, Multiplayer lets
+you type a server address, and Texture Packs searches Modrinth live and
+lets you pick a real pack, replacing the fallback atlas everywhere
+(world included) once it downloads. Passing a server address on the
+command line still skips the menu entirely, for quick testing:
 
 ```
-cargo run --bin cobble
-```
-
-Or connect to a real (offline-mode) 1.8.9 server:
-
-```
-cargo run --bin cobble -- <host[:port]> [username]
+cargo run --bin cobble                       # opens the main menu
+cargo run --bin cobble -- <host[:port]> [username]   # skips straight into a server
 ```
 
 Controls: WASD to move, Space to jump, Shift to sneak (slower walk),
-click the window to capture the mouse and look around, Escape to
-release the mouse.
+click to look around/capture the mouse, Escape to release the mouse
+(press again to return to the main menu).
 
 The trickiest parts have unit tests: `cargo test -p protocol` covers the
 1.8.9 chunk section byte layout, VarInt encoding, block Position
@@ -88,7 +93,12 @@ a wall); `cargo test -p texturepacks` covers `pack.mcmeta` parsing,
 coverage counting, and atlas packing against synthetic zips; `cargo test
 -p renderer` covers the block-id-to-texture mapping and that meshing
 produces the right face count and stays within the right atlas tile's
-UV rect. There's also a network-gated integration test that exercises
+UV rect; `cargo test -p ui` covers font rasterization, text layout
+(including a real baseline-alignment bug and a long-label overflow bug
+this caught and fixed — verified by rendering the actual screens to PNG
+with a throwaway software rasterizer, since this sandbox has no GPU),
+button/text-field input handling, and the menu/picker screens' action
+routing. There's also a network-gated integration test that exercises
 the real Modrinth API end to end (search → download → cache → validate
 → atlas) — it's `#[ignore]`d by default since it needs network access:
 
@@ -101,10 +111,8 @@ playtesting by hand — none of the networking/physics/rendering code was
 exercised against live server traffic or a real GPU in development (see
 the note below).
 
-**Next up (step 5, part 2):** the `ui` crate — a Minecraft-styled main
-menu, texture pack picker (wiring a real downloaded pack's atlas into
-the renderer instead of just the fallback), and in-game HUD, all
-rendered directly with `wgpu`.
+**Next up (step 6):** Android controls (virtual joystick, touch look,
+touch buttons) and an `.apk` build via `cargo-ndk`/`cargo-apk`.
 
 ### A note on testing this in CI/sandboxed environments
 

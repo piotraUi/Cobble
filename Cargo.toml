@@ -36,6 +36,7 @@ uuid = { version = "1", features = ["v4"] }
 image = { version = "0.24", default-features = false, features = ["png"] }
 sha1 = "0.10"
 dirs = "5"
+ab_glyph = "0.2"
 
 protocol = { path = "protocol" }
 renderer = { path = "renderer" }
