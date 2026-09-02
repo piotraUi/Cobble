@@ -8,5 +8,5 @@ mod mesher;
 mod vertex;
 
 pub use gpu::GpuState;
-pub use mesher::mesh_chunk;
+pub use mesher::{mesh_chunk, mesh_world};
 pub use vertex::Vertex;
